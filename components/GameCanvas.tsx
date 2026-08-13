@@ -7,9 +7,10 @@ import { PixiGameRenderer } from '../render/pixiGame';
 interface GameCanvasProps {
   engine: GameEngine;
   onRendererReady?: (renderer: PixiGameRenderer) => void;
+  onOnlineAction?: (x: number, y: number, type: 'reveal' | 'attack' | 'repaint') => boolean;
 }
 
-export const GameCanvas: React.FC<GameCanvasProps> = ({ engine, onRendererReady }) => {
+export const GameCanvas: React.FC<GameCanvasProps> = ({ engine, onRendererReady, onOnlineAction }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<PixiGameRenderer | null>(null);
   const stableCallback = useRef(onRendererReady);
@@ -19,7 +20,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ engine, onRendererReady 
     if (!containerRef.current) return;
 
     let cancelled = false;
-    const renderer = new PixiGameRenderer(containerRef.current, engine);
+    const renderer = new PixiGameRenderer(containerRef.current, engine, onOnlineAction);
     rendererRef.current = renderer;
 
     renderer.init().then(() => {
@@ -37,7 +38,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ engine, onRendererReady 
       renderer.destroy();
       rendererRef.current = null;
     };
-  }, [engine]);
+  }, [engine, onOnlineAction]);
 
   return <div ref={containerRef} className="fixed inset-0 w-full h-full" style={{ backgroundColor: '#050507' }} />;
 };

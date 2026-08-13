@@ -1,7 +1,11 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
+
+const isItch = process.env.BUILD_TARGET === 'itch';
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  output: isItch ? 'export' : undefined,
+  trailingSlash: isItch,
+  images: { unoptimized: isItch },
 };
 
 export default nextConfig;

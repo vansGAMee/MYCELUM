@@ -1,8 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { SpeciesId } from '../game/config';
-import { SPECIES_LIST } from '../game/world';
+import { useMemo, useState } from 'react';
+import { GAME_CONFIG, type SpeciesId } from '../game/config';
 
 interface MultiplayerModalProps {
   onHost: (roomCode: string, species: SpeciesId) => void;
@@ -10,104 +9,11 @@ interface MultiplayerModalProps {
   onClose: () => void;
 }
 
-export const MultiplayerModal: React.FC<MultiplayerModalProps> = ({ onHost, onJoin, onClose }) => {
-  const [mode, setMode] = useState<'menu' | 'host' | 'join'>('menu');
-  const [roomCode, setRoomCode] = useState('');
-  const [inputCode, setInputCode] = useState('');
-  const [selectedSpecies, setSelectedSpecies] = useState<SpeciesId>('cyan');
-
-  const generateCode = () => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
-  };
-
-  const handleStartHost = () => {
-    const code = generateCode();
-    setRoomCode(code);
-    setMode('host');
-    onHost(code, selectedSpecies);
-  };
-
-  const handleStartJoin = () => {
-    if (inputCode.trim().length >= 4) {
-      onJoin(inputCode.trim(), selectedSpecies);
-    }
-  };
-
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      backgroundColor: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(16px)', padding: 16, userSelect: 'none',
-    }}>
-      <div style={{
-        maxWidth: 380, width: '100%', backgroundColor: '#0a0a0c', border: '1px solid rgba(255,255,255,0.1)',
-        borderRadius: 24, padding: 28, color: '#fff', display: 'flex', flexDirection: 'column', gap: 20,
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 12 }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 800, letterSpacing: '0.05em', margin: 0 }}>ONLINE 1V1 (P2P)</h3>
-          <button onClick={onClose} style={{ backgroundColor: '#171717', color: '#a3a3a3', border: 'none', padding: '4px 10px', borderRadius: 8, fontSize: '0.7rem', cursor: 'pointer' }}>
-            CLOSE
-          </button>
-        </div>
-
-        {mode === 'menu' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <button onClick={handleStartHost} style={{
-              padding: 14, borderRadius: 16, backgroundColor: '#fff', color: '#000', fontWeight: 800,
-              fontSize: '0.8rem', border: 'none', cursor: 'pointer', letterSpacing: '0.05em',
-            }}>
-              HOST GAME
-            </button>
-
-            <button onClick={() => setMode('join')} style={{
-              padding: 14, borderRadius: 16, backgroundColor: '#171717', color: '#fff', fontWeight: 700,
-              fontSize: '0.8rem', border: '1px solid rgba(255,255,255,0.15)', cursor: 'pointer', letterSpacing: '0.05em',
-            }}>
-              JOIN GAME
-            </button>
-          </div>
-        )}
-
-        {mode === 'host' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, textAlign: 'center' }}>
-            <div style={{ fontSize: '0.75rem', color: '#a3a3a3', fontFamily: 'monospace' }}>ROOM CODE</div>
-            <div style={{ fontSize: '2rem', fontWeight: 900, letterSpacing: '0.2em', color: '#22d3ee', fontFamily: 'monospace' }}>
-              {roomCode}
-            </div>
-            <div style={{ fontSize: '0.7rem', color: '#737373', fontFamily: 'monospace' }}>
-              Waiting for opponent to connect...
-            </div>
-          </div>
-        )}
-
-        {mode === 'join' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ fontSize: '0.75rem', color: '#a3a3a3', fontFamily: 'monospace' }}>ENTER ROOM CODE</div>
-            <input
-              type="text"
-              maxLength={6}
-              value={inputCode}
-              onChange={(e) => setInputCode(e.target.value.toUpperCase())}
-              placeholder="e.g. ABC123"
-              style={{
-                padding: 12, borderRadius: 12, backgroundColor: '#171717', border: '1px solid rgba(255,255,255,0.2)',
-                color: '#fff', textAlign: 'center', fontSize: '1.2rem', fontWeight: 800, letterSpacing: '0.15em',
-                fontFamily: 'monospace', outline: 'none',
-              }}
-            />
-            <button onClick={handleStartJoin} style={{
-              padding: 12, borderRadius: 12, backgroundColor: '#22d3ee', color: '#000', fontWeight: 800,
-              fontSize: '0.8rem', border: 'none', cursor: 'pointer', letterSpacing: '0.05em',
-            }}>
-              CONNECT
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
+export function MultiplayerModal({ onHost, onJoin, onClose }: MultiplayerModalProps) {
+  const [mode, setMode] = useState<'host' | 'join'>('host');
+  const [code, setCode] = useState('');
+  const [species, setSpecies] = useState<SpeciesId>('cyan');
+  const generated = useMemo(() => Math.random().toString(36).slice(2, 7).toUpperCase(), []);
+  const room = (mode === 'host' ? code || generated : code).trim().toUpperCase();
+  return <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="modal"><header className="modal-head"><h2>Online 1v1</h2><button className="icon-button" onClick={onClose}>Close</button></header><p style={{ color: '#98a19a', fontSize: 13, lineHeight: 1.55 }}>A lightweight peer-to-peer duel. No account, lobby, or server data. Host and guest alternate actions on one seeded substrate.</p><div className="button-row"><button className={mode === 'host' ? 'solid-button' : 'quiet-button'} onClick={() => setMode('host')}>Host</button><button className={mode === 'join' ? 'solid-button' : 'quiet-button'} onClick={() => setMode('join')}>Join</button></div><div className="species-row">{(['cyan','coral','yellow','magenta','violet'] as SpeciesId[]).map((id) => <button key={id} className="species-dot" style={{ '--species': GAME_CONFIG.colors.species[id].cssHex } as React.CSSProperties} aria-pressed={species === id} onClick={() => setSpecies(id)}><i />{id}</button>)}</div><label style={{ display: 'block', color: '#879087', fontSize: 10, letterSpacing: '.12em', marginBottom: 8 }}>ROOM CODE</label><input className="field" value={mode === 'host' && !code ? generated : code} onChange={(event) => setCode(event.target.value.replace(/[^a-z0-9]/gi, '').slice(0, 8))} onFocus={() => { if (mode === 'host' && !code) setCode(generated); }} /><div className="button-row"><button className="solid-button" disabled={!room} onClick={() => mode === 'host' ? onHost(room, species) : onJoin(room, species)}>{mode === 'host' ? 'Host game' : 'Join game'}</button></div></section></div>;
+}

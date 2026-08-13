@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Sprite, Texture, RenderTexture } from 'pixi.js';
+import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import { GAME_CONFIG, SpeciesId } from '../game/config';
 import { GameEngine } from '../game/engine';
 import { Camera } from './camera';
@@ -43,8 +43,11 @@ export class PixiGameRenderer {
   // Animation state
   private revealAnims: Map<string, { t: number; species: SpeciesId; isPlayer: boolean }> = new Map();
   private corePulse = 0;
+  private tilesDirty = true;
+  private lastTileSignature = '';
+  private lastHoverKey = '';
 
-  constructor(container: HTMLElement, engine: GameEngine) {
+  constructor(container: HTMLElement, engine: GameEngine, private onlineAction?: (x: number, y: number, type: 'reveal' | 'attack' | 'repaint') => boolean) {
     this.containerElement = container;
     this.engine = engine;
     this.app = new Application();
@@ -149,6 +152,11 @@ export class PixiGameRenderer {
       const { tileX, tileY } = this.camera.worldToTile(wp.x, wp.y);
       this.hoverTileX = tileX;
       this.hoverTileY = tileY;
+      const hoverKey = `${tileX}:${tileY}:${this.engine.isRepaintMode}`;
+      if (hoverKey !== this.lastHoverKey) {
+        this.lastHoverKey = hoverKey;
+        this.emitHover(tileX, tileY, e.clientX, e.clientY);
+      }
     });
 
     canvas.addEventListener('pointerup', (e) => {
@@ -160,13 +168,18 @@ export class PixiGameRenderer {
         const wp = this.camera.screenToWorld(pos.x, pos.y);
         const { tileX, tileY } = this.camera.worldToTile(wp.x, wp.y);
         if (this.engine.isRepaintMode) {
-          this.engine.repaintCell(tileX, tileY);
+          if (this.onlineAction) this.onlineAction(tileX, tileY, 'repaint');
+          else this.engine.repaintCell(tileX, tileY);
         } else {
           const cell = this.engine.world.getExistingCell(tileX, tileY);
-          if (cell && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && !cell.isCore) {
-            this.engine.attackCell(tileX, tileY);
+          if (cell?.isSnapHidden) {
+            this.engine.inspectObscuredCell(tileX, tileY);
+          } else if (cell?.claimed && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && (!cell.isCore || (tileX === this.engine.enemyCoreX && tileY === this.engine.enemyCoreY))) {
+            if (this.onlineAction) this.onlineAction(tileX, tileY, 'attack');
+            else this.engine.attackCell(tileX, tileY);
           } else {
-            this.engine.revealCell(tileX, tileY);
+            if (this.onlineAction) this.onlineAction(tileX, tileY, 'reveal');
+            else this.engine.revealCell(tileX, tileY);
           }
         }
       }
@@ -177,6 +190,7 @@ export class PixiGameRenderer {
       this.hoverTileX = null;
       this.hoverTileY = null;
       if (this.isPointerDown) { this.camera.endDrag(); this.isPointerDown = false; }
+      window.dispatchEvent(new CustomEvent('mycelium:hover', { detail: null }));
     });
 
     canvas.addEventListener('wheel', (e) => {
@@ -195,7 +209,42 @@ export class PixiGameRenderer {
     window.addEventListener('resize', this.resizeHandler);
   }
 
+  private emitHover(x: number, y: number, clientX: number, clientY: number) {
+    const cell = this.engine.world.getCell(x, y);
+    const adjacent = this.engine.isAdjacentToPlayerTerritory(x, y);
+    let detail: Record<string, unknown> | null = null;
+    if (cell.isSnapHidden && cell.claimed) {
+      detail = { x: clientX, y: clientY, title: 'MEMORY OBSCURED', lines: ['Click to inspect · free action'] };
+    } else if (!cell.claimed && !cell.revealed && adjacent) {
+      const prediction = this.engine.getSpeciesPrediction(x, y);
+      const ranked = Object.entries(prediction.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const square = prediction.likelySpecies === this.engine.playerSpecies ? this.engine.previewCompletedSquare(x, y) : 0;
+      detail = {
+        x: clientX,
+        y: clientY,
+        title: `LIKELY ${GAME_CONFIG.colors.species[prediction.likelySpecies].name.toUpperCase()}`,
+        lines: ranked.map(([id, chance]) => `${GAME_CONFIG.colors.species[id as SpeciesId].name.split(' ')[0]} ${chance}%`).concat(square ? [`IF ${GAME_CONFIG.colors.species[this.engine.playerSpecies].name.split(' ')[0]}: COMPLETES ${square}×${square}`] : []),
+      };
+    } else if (cell.claimed && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && (!cell.isCore || (x === this.engine.enemyCoreX && y === this.engine.enemyCoreY)) && adjacent) {
+      const preview = this.engine.getAttackPreview(x, y);
+      const square = this.engine.previewCompletedSquare(x, y);
+      detail = {
+        x: clientX,
+        y: clientY,
+        title: this.engine.isRepaintMode ? `REPAINT ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : `ATTACK ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}`,
+        lines: this.engine.isRepaintMode
+          ? ['Guaranteed capture', `${this.engine.repaintCharges}/3 charges`, ...(square ? [`WOULD COMPLETE ${square}×${square}`] : [])]
+          : [`SUCCESS ${preview.chance}%`, `${preview.attackerSupport} ${GAME_CONFIG.colors.species[this.engine.playerSpecies].name.split(' ')[0]} support`, `${preview.defenderSupport} ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.split(' ')[0]} support`, ...(square ? [`WOULD COMPLETE ${square}×${square}`] : [])],
+      };
+    } else {
+      const intent = this.engine.activeIntents.find((item) => item.targetCell === `${x}:${y}`);
+      if (intent) detail = { x: clientX, y: clientY, title: `${GAME_CONFIG.colors.species[intent.sourceSpeciesId].name.toUpperCase()} ${intent.actionType.toUpperCase()}`, lines: [`${intent.chance}%`, 'Resolves after your move'] };
+    }
+    window.dispatchEvent(new CustomEvent('mycelium:hover', { detail }));
+  }
+
   private onEngineUpdate() {
+    this.tilesDirty = true;
     // Queue reveal animations
     for (const ev of this.engine.animEvents) {
       if (ev.type === 'reveal') {
@@ -236,7 +285,13 @@ export class PixiGameRenderer {
     this.particles.update(delta);
     this.particles.render(this.particleGfx);
 
-    this.renderVisibleTiles();
+    const bounds = this.camera.getVisibleTileBounds();
+    const signature = `${bounds.minTileX}:${bounds.minTileY}:${bounds.maxTileX}:${bounds.maxTileY}:${this.camera.zoom.toFixed(2)}:${this.engine.turn}:${this.engine.repaintCharges}`;
+    if (this.tilesDirty || this.revealAnims.size > 0 || signature !== this.lastTileSignature) {
+      this.renderVisibleTiles();
+      this.lastTileSignature = signature;
+      this.tilesDirty = false;
+    }
     this.renderCore();
     this.renderHover();
   }
@@ -256,9 +311,9 @@ export class PixiGameRenderer {
     for (let tx = bounds.minTileX; tx <= bounds.maxTileX; tx++) {
       for (let ty = bounds.minTileY; ty <= bounds.maxTileY; ty++) {
         const key = `${tx}:${ty}`;
-        activeKeys.add(key);
-
         const cell = this.engine.world.getCell(tx, ty);
+        if (isFarZoom && !cell.claimed && !cell.revealed) continue;
+        activeKeys.add(key);
         let entry = this.tileMap.get(key);
 
         const worldX = tx * step - tileSize / 2;
@@ -282,7 +337,7 @@ export class PixiGameRenderer {
         spr.visible = true;
         spr.position.set(worldX, worldY);
 
-        if (!cell.revealed) {
+        if (!cell.revealed || cell.isSnapHidden || (!!cell.blockedUntilTurn && cell.blockedUntilTurn >= this.engine.turn)) {
           // Only update texture if state changed
           if (entry.lastRevealed !== false) {
             spr.texture = this.hiddenTex;
@@ -294,7 +349,13 @@ export class PixiGameRenderer {
           }
 
           // Frontier hint: slightly brighter for cells adjacent to player
-          if (isCloseZoom && this.engine.isAdjacentToPlayerTerritory(tx, ty)) {
+          if (cell.blockedUntilTurn && cell.blockedUntilTurn >= this.engine.turn) {
+            spr.tint = 0x394039;
+            spr.alpha = 0.75;
+          } else if (cell.isSnapHidden && cell.claimed) {
+            spr.tint = GAME_CONFIG.colors.species[cell.currentSpeciesId].hex;
+            spr.alpha = 0.2;
+          } else if (isCloseZoom && this.engine.isAdjacentToPlayerTerritory(tx, ty)) {
             spr.tint = 0xccccff;
             spr.alpha = 0.7;
           } else {
@@ -340,10 +401,12 @@ export class PixiGameRenderer {
       }
     }
 
-    // Hide off-screen tiles
+    // Release off-screen sprites so long pans do not grow the display list forever.
     for (const [key, entry] of this.tileMap.entries()) {
       if (!activeKeys.has(key)) {
-        entry.sprite.visible = false;
+        this.worldContainer.removeChild(entry.sprite);
+        entry.sprite.destroy();
+        this.tileMap.delete(key);
       }
     }
   }
@@ -381,11 +444,13 @@ export class PixiGameRenderer {
 
     // --- 2. ENEMY INTENTS TELEGRAPH ---
     for (const intent of this.engine.activeIntents) {
-      const fx = intent.sourceX * step;
-      const fy = intent.sourceY * step;
-      const tx = intent.toX * step;
-      const ty = intent.toY * step;
-      const intentColor = GAME_CONFIG.colors.species[intent.sourceSpecies]?.hex || 0xff4444;
+      const [sourceX, sourceY] = intent.sourceCell.split(':').map(Number);
+      const [targetX, targetY] = intent.targetCell.split(':').map(Number);
+      const fx = sourceX * step;
+      const fy = sourceY * step;
+      const tx = targetX * step;
+      const ty = targetY * step;
+      const intentColor = GAME_CONFIG.colors.species[intent.sourceSpeciesId]?.hex || 0xff4444;
 
       // Draw thin animated attack tendril line
       this.coreGfx.moveTo(fx, fy);
@@ -436,10 +501,14 @@ export class PixiGameRenderer {
 
     const cell = this.engine.world.getCell(this.hoverTileX, this.hoverTileY);
     const isAdjacent = this.engine.isAdjacentToPlayerTerritory(this.hoverTileX, this.hoverTileY);
-    const isEnemy = cell && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && !cell.isCore;
-    const isHiddenFrontier = cell && !cell.revealed && isAdjacent;
+    const isEnemy = cell.claimed && cell.revealed && !cell.isSnapHidden && cell.currentSpeciesId !== this.engine.playerSpecies && (!cell.isCore || (this.hoverTileX === this.engine.enemyCoreX && this.hoverTileY === this.engine.enemyCoreY));
+    const isHiddenFrontier = !cell.claimed && !cell.revealed && isAdjacent;
+    const isTutorialTarget = this.engine.tutorialMode && this.engine.tutorialTarget === `${this.hoverTileX}:${this.hoverTileY}`;
 
-    if (this.engine.isRepaintMode && (isEnemy || isHiddenFrontier)) {
+    if (isTutorialTarget) {
+      this.hoverGfx.roundRect(worldX - tileSize / 2 - 3, worldY - tileSize / 2 - 3, tileSize + 6, tileSize + 6, radius + 3);
+      this.hoverGfx.stroke({ color: 0xffd36a, alpha: 1, width: 3 });
+    } else if (this.engine.isRepaintMode && isEnemy) {
       const repColor = GAME_CONFIG.colors.species[this.engine.playerSpecies].hex;
       this.hoverGfx.roundRect(worldX - tileSize / 2 - 2, worldY - tileSize / 2 - 2, tileSize + 4, tileSize + 4, radius + 2);
       this.hoverGfx.stroke({ color: repColor, alpha: 0.9, width: 2.5 });

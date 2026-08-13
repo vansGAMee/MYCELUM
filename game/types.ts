@@ -1,22 +1,25 @@
-import { SpeciesId } from './config';
+import type { SpeciesId } from './config';
 
-export type CellKey = string; // "x:y"
+export type CellKey = string;
 
 export interface Cell {
   x: number;
   y: number;
   naturalSpeciesId: SpeciesId;
   currentSpeciesId: SpeciesId;
-  strainId?: string;
+  claimed: boolean;
   revealed: boolean;
+  strainId?: string;
   isCore?: boolean;
   reinforcement: number;
   discoveredTurn?: number;
   lastChangedTurn?: number;
   isSnapHidden?: boolean;
+  obscuredUntilTurn?: number;
+  blockedUntilTurn?: number;
 }
 
-export type SecondaryTrait = 'fast' | 'armored' | 'parasite';
+export type SecondaryTrait = 'swift' | 'armored' | 'parasite';
 
 export interface Strain {
   id: string;
@@ -29,18 +32,30 @@ export interface Strain {
 
 export interface EnemyIntent {
   id: string;
-  sourceX: number;
-  sourceY: number;
-  sourceSpecies: SpeciesId;
-  toX: number;
-  toY: number;
-  isThreatToCore: boolean;
+  sourceCell: CellKey;
+  sourceSpeciesId: SpeciesId;
+  targetCell: CellKey;
+  actionType: 'attack' | 'expand' | 'special';
+  chance: number;
+  createdTurn: number;
 }
 
 export interface SpeciesPrediction {
   likelySpecies: SpeciesId;
   confidencePercent: number;
   probabilities: Record<SpeciesId, number>;
+}
+
+export interface AttackPreview {
+  chance: number;
+  attackerSupport: number;
+  defenderSupport: number;
+}
+
+export interface LegalActions {
+  reveals: CellKey[];
+  attacks: CellKey[];
+  repaints: CellKey[];
 }
 
 export interface SquareMatch {
@@ -71,7 +86,8 @@ export interface WorldEvent {
   description: string;
   targetSpeciesId?: SpeciesId;
   turn: number;
-  duration?: number;
+  duration: number;
+  expiresTurn: number;
 }
 
 export interface EventLogEntry {
@@ -84,6 +100,7 @@ export interface GameStats {
   turnCount: number;
   playerTerritory: number;
   maxPlayerTerritory: number;
+  enemiesCaptured: number;
   totalSquaresCaptured: number;
   largestSquareSize: number;
   currentCombo: number;
@@ -102,6 +119,20 @@ export type GameAnimEvent =
   | { type: 'event'; event: WorldEvent }
   | { type: 'gameOver' };
 
+export interface SavedCell {
+  x: number;
+  y: number;
+  currentSpeciesId: SpeciesId;
+  claimed: boolean;
+  revealed: boolean;
+  strainId?: string;
+  reinforcement: number;
+  isCore?: boolean;
+  isSnapHidden?: boolean;
+  obscuredUntilTurn?: number;
+  blockedUntilTurn?: number;
+}
+
 export interface SaveData {
   version: number;
   seed: number;
@@ -111,17 +142,11 @@ export interface SaveData {
   coreX: number;
   coreY: number;
   gameOver: boolean;
-  revealedCells: Array<[number, number]>;
-  modifiedCells: Array<{
-    x: number;
-    y: number;
-    currentSpeciesId: SpeciesId;
-    strainId?: string;
-    reinforcement: number;
-    revealed: boolean;
-    isCore?: boolean;
-  }>;
+  dailyKey?: string;
+  cells: SavedCell[];
   strains: Strain[];
+  activeIntents: EnemyIntent[];
+  lastEvent: WorldEvent | null;
   stats: GameStats;
   eventLogs: EventLogEntry[];
 }

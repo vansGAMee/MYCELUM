@@ -1,164 +1,77 @@
-import { GAME_CONFIG, SpeciesId } from './config';
-import { PRNG } from './rng';
-import { SecondaryTrait, Strain, WorldEvent, WorldEventType } from './types';
-import { getCellKey, SPECIES_LIST, WorldManager } from './world';
+import { GAME_CONFIG, type SpeciesId } from './config';
+import type { PRNG } from './rng';
+import type { SecondaryTrait, Strain, WorldEvent, WorldEventType } from './types';
+import { getCellKey, SPECIES_LIST, type WorldManager } from './world';
+
+export const EVENT_COPY: Record<WorldEventType, [string, string, number]> = {
+  DENSE_FOG: ['Dense Fog', 'Known non-Core cells are obscured for three turns. Ownership is unchanged.', 3],
+  COSMIC_SNAP: ['Cosmic Snap', 'A memory collapse hides known non-Core information. Re-inspection is free.', 1],
+  SPORE_RAIN: ['Spore Rain', 'Dormant hostile spores appear along the explored frontier.', 2],
+  BLOOM_TIDE: ['Bloom Tide', 'One family gains additional outward pressure for three turns.', 3],
+  DROUGHT: ['Drought', 'Outward expansion slows for three turns; adjacent combat remains active.', 3],
+  MUTATION_SURGE: ['Mutation Surge', 'A visible frontier strain mutates.', 3],
+  DEAD_PATCH: ['Dead Patch', 'A small substrate region cannot be captured for four turns.', 4],
+  RESONANCE: ['Resonance', 'Square chains quicken; the next large square earns an extra Repaint.', 3],
+};
 
 export class WorldEventManager {
-  /**
-   * Generates a telegraphed World Event announcement.
-   */
-  public static triggerEvent(
-    turn: number,
-    prng: PRNG,
-    world: WorldManager,
-    strains: Strain[],
-    playerSpecies: SpeciesId
-  ): { event: WorldEvent; affectedCells: string[] } {
-    const eventTypes: WorldEventType[] = [
-      'DENSE_FOG',
-      'COSMIC_SNAP',
-      'SPORE_RAIN',
-      'BLOOM_TIDE',
-      'DROUGHT',
-      'MUTATION_SURGE',
-      'DEAD_PATCH',
-      'RESONANCE',
-    ];
-
-    const type = prng.pick(eventTypes);
-    const targetSpecies = prng.pick(SPECIES_LIST);
+  public static triggerEvent(turn: number, prng: PRNG, world: WorldManager, strains: Strain[], playerSpecies: SpeciesId, forcedType?: WorldEventType): { event: WorldEvent; affectedCells: string[] } {
+    const types = Object.keys(EVENT_COPY) as WorldEventType[];
+    const type = forcedType ?? prng.pick(types);
+    const targetSpeciesId = prng.pick(SPECIES_LIST.filter((id) => id !== playerSpecies));
+    const [title, description, duration] = EVENT_COPY[type];
     const affectedCells: string[] = [];
 
-    let title = '';
-    let description = '';
-
-    switch (type) {
-      case 'DENSE_FOG': {
-        title = 'ПЛОТНЫЙ ТУМАН (DENSE FOG)';
-        description = 'Густой туман скрывает часть территории на 3 хода. Ваше владение клетками сохраняется!';
-        const loaded = world.getLoadedChunks();
-        for (const chunk of loaded) {
-          for (const cell of chunk.cells.values()) {
-            if (cell.revealed && !cell.isCore && prng.next() < 0.25) {
-              cell.isSnapHidden = true;
-              affectedCells.push(getCellKey(cell.x, cell.y));
-            }
-          }
+    const claimed = world.getLoadedChunks().flatMap((chunk) => [...chunk.cells.values()]).filter((cell) => cell.claimed && !cell.isCore);
+    if (type === 'DENSE_FOG' || type === 'COSMIC_SNAP') {
+      const ratio = type === 'COSMIC_SNAP' ? 0.5 : 0.28;
+      for (const cell of claimed) {
+        if (prng.next() < ratio) {
+          cell.isSnapHidden = true;
+          cell.obscuredUntilTurn = type === 'DENSE_FOG' ? turn + duration : undefined;
+          affectedCells.push(getCellKey(cell.x, cell.y));
         }
-        break;
-      }
-
-      case 'COSMIC_SNAP': {
-        title = 'КОСМИЧЕСКИЙ ЩЕЛЧОК (COSMIC SNAP)';
-        description = 'Электромагнитная волна скрывает 50% информации. Повторный осмотр этих клеток БЕСПЛАТЕН!';
-        const loaded = world.getLoadedChunks();
-        for (const chunk of loaded) {
-          for (const cell of chunk.cells.values()) {
-            if (cell.revealed && !cell.isCore && prng.next() < 0.50) {
-              cell.revealed = false;
-              affectedCells.push(getCellKey(cell.x, cell.y));
-            }
-          }
-        }
-        break;
-      }
-
-      case 'SPORE_RAIN': {
-        const speciesObj = GAME_CONFIG.colors.species[targetSpecies];
-        title = 'СПОРОВЫЙ ДОЖДЬ (SPORE RAIN)';
-        description = `Споры породы ${speciesObj.name} выпадают на границе исследованой зоны!`;
-
-        const centerX = prng.rangeInt(-12, 12);
-        const centerY = prng.rangeInt(-12, 12);
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
-            const cell = world.getCell(centerX + dx, centerY + dy);
-            if (!cell.isCore) {
-              cell.currentSpeciesId = targetSpecies;
-              cell.revealed = true;
-              affectedCells.push(getCellKey(cell.x, cell.y));
-            }
-          }
-        }
-        break;
-      }
-
-      case 'BLOOM_TIDE': {
-        const speciesObj = GAME_CONFIG.colors.species[targetSpecies];
-        title = 'ВСПЫШКА РОСТА (BLOOM TIDE)';
-        description = `Порода ${speciesObj.name} получает +1 намеренное распространение на 3 хода!`;
-        break;
-      }
-
-      case 'DROUGHT': {
-        title = 'ЗАСТОЙ МИЦЕЛИЯ (DROUGHT)';
-        description = 'Засуха замедляет разрастание всех вражеских штаммов на 3 хода.';
-        break;
-      }
-
-      case 'MUTATION_SURGE': {
-        const traitTypes: SecondaryTrait[] = ['fast', 'armored', 'parasite'];
-        const trait = prng.pick(traitTypes);
-        const speciesObj = GAME_CONFIG.colors.species[targetSpecies];
-
-        const traitNames: Record<SecondaryTrait, string> = {
-          fast: 'БЫСТРЫЙ',
-          armored: 'БРОНИРОВАННЫЙ',
-          parasite: 'ПАРАЗИТ',
-        };
-
-        const strainId = `${targetSpecies}_${trait}_${turn}`;
-        const newStrain: Strain = {
-          id: strainId,
-          speciesId: targetSpecies,
-          name: `${speciesObj.name} (${traitNames[trait]})`,
-          trait,
-          colorHex: speciesObj.secondaryHex,
-          cssHex: speciesObj.cssHex,
-        };
-
-        strains.push(newStrain);
-        title = 'ВСПЛЕСК МУТАЦИИ (MUTATION SURGE)';
-        description = `Порода ${speciesObj.name} развила штамм [${traitNames[trait]}]!`;
-        break;
-      }
-
-      case 'DEAD_PATCH': {
-        title = 'МЕРТВАЯ ЗОНА (DEAD PATCH)';
-        description = 'Токсичный разлом 3x3 временно нейтрализует почву на 4 хода.';
-        const cx = prng.rangeInt(-8, 8);
-        const cy = prng.rangeInt(-8, 8);
-
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dy = -1; dy <= 1; dy++) {
-            const cell = world.getCell(cx + dx, cy + dy);
-            if (!cell.isCore) {
-              cell.revealed = false;
-              cell.reinforcement = 1;
-              affectedCells.push(getCellKey(cell.x, cell.y));
-            }
-          }
-        }
-        break;
-      }
-
-      case 'RESONANCE': {
-        title = 'РЕЗОНАНС МИЦЕЛИЯ (RESONANCE)';
-        description = 'Энергетический резонанс! Первый построенный квадрат 4x4 за 3 хода даст +2 Перекраски.';
-        break;
       }
     }
 
-    const event: WorldEvent = {
-      id: `evt_${turn}_${Date.now()}`,
-      type,
-      title,
-      description,
-      targetSpeciesId: targetSpecies,
-      turn,
-      duration: 3,
-    };
+    if (type === 'SPORE_RAIN') {
+      const frontier = claimed.flatMap((cell) => [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => world.getCell(cell.x + dx, cell.y + dy)))
+        .filter((cell, index, all) => !cell.claimed && !cell.isCore && all.indexOf(cell) === index);
+      const count = Math.min(frontier.length, prng.rangeInt(2, 4));
+      for (let i = 0; i < count; i++) {
+        const cell = frontier.splice(prng.rangeInt(0, frontier.length - 1), 1)[0];
+        cell.currentSpeciesId = targetSpeciesId;
+        cell.claimed = true;
+        cell.revealed = true;
+        cell.lastChangedTurn = turn;
+        affectedCells.push(getCellKey(cell.x, cell.y));
+      }
+    }
 
+    if (type === 'DEAD_PATCH') {
+      const anchor = claimed.length ? prng.pick(claimed) : world.getCell(5, 5);
+      for (let dx = 1; dx <= 2; dx++) {
+        for (let dy = 1; dy <= 2; dy++) {
+          const cell = world.getCell(anchor.x + dx, anchor.y + dy);
+          if (!cell.isCore && !cell.claimed) {
+            cell.blockedUntilTurn = turn + duration;
+            cell.revealed = true;
+            affectedCells.push(getCellKey(cell.x, cell.y));
+          }
+        }
+      }
+    }
+
+    if (type === 'MUTATION_SURGE') {
+      const traits: SecondaryTrait[] = ['swift', 'armored', 'parasite'];
+      const trait = prng.pick(traits);
+      const id = `${targetSpeciesId}:${trait}:${turn}`;
+      strains.push({ id, speciesId: targetSpeciesId, name: `${GAME_CONFIG.colors.species[targetSpeciesId].name} · ${trait}`, trait, colorHex: GAME_CONFIG.colors.species[targetSpeciesId].secondaryHex, cssHex: GAME_CONFIG.colors.species[targetSpeciesId].cssHex });
+      const target = claimed.find((cell) => cell.currentSpeciesId === targetSpeciesId);
+      if (target) target.strainId = id;
+    }
+
+    const event: WorldEvent = { id: `event:${turn}:${type}`, type, title, description, targetSpeciesId, turn, duration, expiresTurn: turn + duration };
     return { event, affectedCells };
   }
 }

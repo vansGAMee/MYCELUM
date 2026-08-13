@@ -1,6 +1,6 @@
-import { GAME_CONFIG, SpeciesId } from './config';
-import { PRNG } from './rng';
-import { Cell, SpeciesPrediction } from './types';
+import { GAME_CONFIG, type SpeciesId } from './config';
+import { create2DNoise } from './rng';
+import type { Cell, SpeciesPrediction } from './types';
 
 export const SPECIES_LIST: SpeciesId[] = ['cyan', 'coral', 'yellow', 'magenta', 'violet'];
 
@@ -9,40 +9,29 @@ export function getCellKey(x: number, y: number): string {
 }
 
 export function parseCellKey(key: string): [number, number] {
-  const parts = key.split(':').map(Number);
-  return [parts[0], parts[1]];
+  const [x, y] = key.split(':').map(Number);
+  return [x, y];
 }
 
+type SpeciesResolver = (x: number, y: number) => SpeciesId;
+
 export class Chunk {
-  public cx: number;
-  public cy: number;
-  public cells: Map<string, Cell> = new Map();
+  public cells = new Map<string, Cell>();
 
-  constructor(cx: number, cy: number, seed: number) {
-    this.cx = cx;
-    this.cy = cy;
-    this.generate(seed);
-  }
-
-  private generate(seed: number) {
-    const startX = this.cx * GAME_CONFIG.chunkSize;
-    const startY = this.cy * GAME_CONFIG.chunkSize;
-
-    for (let x = 0; x < GAME_CONFIG.chunkSize; x++) {
-      for (let y = 0; y < GAME_CONFIG.chunkSize; y++) {
-        const worldX = startX + x;
-        const worldY = startY + y;
-        const key = getCellKey(worldX, worldY);
-
-        // Deterministic species pick using PRNG seed + coordinates
-        const prng = new PRNG(seed + worldX * 73856093 ^ worldY * 19349663);
-        const naturalSpeciesId = prng.pick(SPECIES_LIST);
-
-        this.cells.set(key, {
-          x: worldX,
-          y: worldY,
+  constructor(public cx: number, public cy: number, speciesAt: SpeciesResolver) {
+    const startX = cx * GAME_CONFIG.chunkSize;
+    const startY = cy * GAME_CONFIG.chunkSize;
+    for (let lx = 0; lx < GAME_CONFIG.chunkSize; lx++) {
+      for (let ly = 0; ly < GAME_CONFIG.chunkSize; ly++) {
+        const x = startX + lx;
+        const y = startY + ly;
+        const naturalSpeciesId = speciesAt(x, y);
+        this.cells.set(getCellKey(x, y), {
+          x,
+          y,
           naturalSpeciesId,
           currentSpeciesId: naturalSpeciesId,
+          claimed: false,
           revealed: false,
           reinforcement: 1,
         });
@@ -52,12 +41,27 @@ export class Chunk {
 }
 
 export class WorldManager {
-  public seed: number;
-  private chunks: Map<string, Chunk> = new Map();
+  private chunks = new Map<string, Chunk>();
+  private biomeNoise: Array<(x: number, y: number) => number>;
 
-  constructor(seed: number) {
-    this.seed = seed;
+  constructor(public seed: number) {
+    this.biomeNoise = SPECIES_LIST.map((_, index) => create2DNoise(seed + 9719 * (index + 1)));
   }
+
+  private speciesAt = (x: number, y: number): SpeciesId => {
+    let best = -Infinity;
+    let selected = SPECIES_LIST[0];
+    for (let i = 0; i < SPECIES_LIST.length; i++) {
+      const broad = this.biomeNoise[i](x * 0.055, y * 0.055);
+      const detail = this.biomeNoise[i](x * 0.017 + 31, y * 0.017 - 17) * 0.35;
+      const score = broad + detail;
+      if (score > best) {
+        best = score;
+        selected = SPECIES_LIST[i];
+      }
+    }
+    return selected;
+  };
 
   public getChunkKey(cx: number, cy: number): string {
     return `${cx}:${cy}`;
@@ -67,107 +71,69 @@ export class WorldManager {
     const cx = Math.floor(x / GAME_CONFIG.chunkSize);
     const cy = Math.floor(y / GAME_CONFIG.chunkSize);
     const key = this.getChunkKey(cx, cy);
-
     let chunk = this.chunks.get(key);
     if (!chunk) {
-      chunk = new Chunk(cx, cy, this.seed);
+      chunk = new Chunk(cx, cy, this.speciesAt);
       this.chunks.set(key, chunk);
     }
     return chunk;
   }
 
   public getCell(x: number, y: number): Cell {
-    const chunk = this.getChunkForCell(x, y);
-    return chunk.cells.get(getCellKey(x, y))!;
+    return this.getChunkForCell(x, y).cells.get(getCellKey(x, y))!;
   }
 
   public getExistingCell(x: number, y: number): Cell | undefined {
     const cx = Math.floor(x / GAME_CONFIG.chunkSize);
     const cy = Math.floor(y / GAME_CONFIG.chunkSize);
-    const chunkKey = this.getChunkKey(cx, cy);
-    const chunk = this.chunks.get(chunkKey);
-    if (!chunk) return undefined;
-    return chunk.cells.get(getCellKey(x, y));
+    return this.chunks.get(this.getChunkKey(cx, cy))?.cells.get(getCellKey(x, y));
   }
 
   public getLoadedChunks(): Chunk[] {
-    return Array.from(this.chunks.values());
+    return [...this.chunks.values()];
   }
 
-  /**
-   * Initializes small 3x3 player colony centered around Core (0,0).
-   */
   public initPlayerColony(playerSpecies: SpeciesId) {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const cell = this.getCell(dx, dy);
         cell.currentSpeciesId = playerSpecies;
         cell.naturalSpeciesId = playerSpecies;
+        cell.claimed = true;
         cell.revealed = true;
-        cell.reinforcement = (dx === 0 && dy === 0) ? 3 : 1;
-        if (dx === 0 && dy === 0) {
-          cell.isCore = true;
-        }
+        cell.reinforcement = dx === 0 && dy === 0 ? 3 : 1;
+        cell.isCore = dx === 0 && dy === 0;
       }
     }
   }
 
-  /**
-   * Calculates deterministic biological pressure & species likelihood for hidden tile (x, y).
-   */
   public getSpeciesPrediction(x: number, y: number): SpeciesPrediction {
-    const targetCell = this.getCell(x, y);
-    const weights: Record<SpeciesId, number> = {
-      cyan: 10,
-      coral: 10,
-      yellow: 10,
-      magenta: 10,
-      violet: 10,
-    };
+    const target = this.getCell(x, y);
+    const weights: Record<SpeciesId, number> = { cyan: 8, coral: 8, yellow: 8, magenta: 8, violet: 8 };
+    weights[target.naturalSpeciesId] += 52;
 
-    // Heavy weight from natural seeded species
-    weights[targetCell.naturalSpeciesId] += 40;
-
-    // Weight from revealed 8-neighbor cells
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dy = -2; dy <= 2; dy++) {
         if (dx === 0 && dy === 0) continue;
-        const nCell = this.getExistingCell(x + dx, y + dy);
-        if (nCell && nCell.revealed) {
-          weights[nCell.currentSpeciesId] += 25;
-        }
+        const neighbor = this.getCell(x + dx, y + dy);
+        const proximity = Math.max(1, 4 - Math.max(Math.abs(dx), Math.abs(dy)));
+        weights[neighbor.naturalSpeciesId] += proximity * 3;
       }
     }
 
-    let totalWeight = 0;
-    for (const sp of SPECIES_LIST) {
-      totalWeight += weights[sp];
-    }
-
-    const probabilities: Record<SpeciesId, number> = {
-      cyan: 0,
-      coral: 0,
-      yellow: 0,
-      magenta: 0,
-      violet: 0,
-    };
-
-    let maxProb = 0;
-    let likelySpecies: SpeciesId = targetCell.naturalSpeciesId;
-
-    for (const sp of SPECIES_LIST) {
-      const pct = Math.round((weights[sp] / totalWeight) * 100);
-      probabilities[sp] = pct;
-      if (pct > maxProb) {
-        maxProb = pct;
-        likelySpecies = sp;
+    const total = SPECIES_LIST.reduce((sum, id) => sum + weights[id], 0);
+    const probabilities = { cyan: 0, coral: 0, yellow: 0, magenta: 0, violet: 0 } satisfies Record<SpeciesId, number>;
+    let likelySpecies = target.naturalSpeciesId;
+    let confidencePercent = 0;
+    for (const id of SPECIES_LIST) {
+      probabilities[id] = Math.round((weights[id] / total) * 100);
+      if (probabilities[id] > confidencePercent) {
+        confidencePercent = probabilities[id];
+        likelySpecies = id;
       }
     }
-
-    return {
-      likelySpecies,
-      confidencePercent: maxProb,
-      probabilities,
-    };
+    const drift = 100 - SPECIES_LIST.reduce((sum, id) => sum + probabilities[id], 0);
+    probabilities[likelySpecies] += drift;
+    return { likelySpecies, confidencePercent: probabilities[likelySpecies], probabilities };
   }
 }

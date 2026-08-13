@@ -1,16 +1,16 @@
-import { SaveData } from './types';
+import type { SaveData } from './types';
 
-const SAVE_KEY = 'fungal_conquest_save_v1';
+const SAVE_KEY = 'mycelium_save_v5';
+const LEGACY_KEYS = ['fungal_conquest_save_v1'];
+export const SAVE_VERSION = 5;
 
 export class SaveManager {
   public static save(data: SaveData): boolean {
     if (typeof window === 'undefined') return false;
     try {
-      const json = JSON.stringify(data);
-      localStorage.setItem(SAVE_KEY, json);
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       return true;
-    } catch (e) {
-      console.warn('Failed to save game to localStorage:', e);
+    } catch {
       return false;
     }
   }
@@ -20,20 +20,25 @@ export class SaveManager {
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) return null;
-      return JSON.parse(raw) as SaveData;
-    } catch (e) {
-      console.warn('Failed to load game from localStorage:', e);
+      const parsed = JSON.parse(raw) as SaveData;
+      if (parsed.version !== SAVE_VERSION || !Array.isArray(parsed.cells)) {
+        localStorage.removeItem(SAVE_KEY);
+        return null;
+      }
+      return parsed;
+    } catch {
+      localStorage.removeItem(SAVE_KEY);
       return null;
     }
   }
 
   public static hasSave(): boolean {
-    if (typeof window === 'undefined') return false;
-    return !!localStorage.getItem(SAVE_KEY);
+    return this.load() !== null;
   }
 
   public static clearSave(): void {
     if (typeof window === 'undefined') return;
     localStorage.removeItem(SAVE_KEY);
+    for (const key of LEGACY_KEYS) localStorage.removeItem(key);
   }
 }

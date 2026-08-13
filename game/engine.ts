@@ -1,66 +1,48 @@
-import { GAME_CONFIG, SpeciesId } from './config';
-import { WorldEventManager } from './events';
+import { GAME_CONFIG, type SpeciesId } from './config';
+import { EVENT_COPY, WorldEventManager } from './events';
 import { PRNG } from './rng';
-import { SaveManager } from './save';
+import { RecordManager } from './records';
+import { SaveManager, SAVE_VERSION } from './save';
 import { SpreadSimulator } from './spread';
 import { SquareDetector } from './squares';
-import {
+import type {
+  AttackPreview,
   CellKey,
   EnemyIntent,
   EventLogEntry,
   GameAnimEvent,
   GameStats,
+  LegalActions,
   SaveData,
   SpeciesPrediction,
   SquareMatch,
   Strain,
   WorldEvent,
+  WorldEventType,
 } from './types';
-import { getCellKey, WorldManager } from './world';
+import { getCellKey, parseCellKey, WorldManager } from './world';
 
 export type EngineCallback = () => void;
 
-const DIRS8 = [
-  [-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]
+const DIRS8: Array<[number, number]> = [
+  [-1, -1], [0, -1], [1, -1],
+  [-1, 0], [1, 0],
+  [-1, 1], [0, 1], [1, 1],
 ];
 
-const DIRS4 = [
-  [-1,0],[1,0],[0,-1],[0,1]
-];
+function randomSeed(): number {
+  if (typeof crypto !== 'undefined' && 'getRandomValues' in crypto) {
+    return crypto.getRandomValues(new Uint32Array(1))[0];
+  }
+  return (Date.now() ^ 0x9e3779b9) >>> 0;
+}
 
-export class GameEngine {
-  public seed: number;
-  public prng: PRNG;
-  public world: WorldManager;
-  public playerSpecies: SpeciesId;
-
-  public turn: number = 1;
-  public repaintCharges: number = GAME_CONFIG.startingRepaints; // 2
-  public isRepaintMode: boolean = false;
-  public coreX: number = 0;
-  public coreY: number = 0;
-
-  // Enemy Core tracking for 1v1 multiplayer
-  public enemyCoreX: number | null = null;
-  public enemyCoreY: number | null = null;
-
-  public gameOver: boolean = false;
-  public gameWon: boolean = false;
-
-  public strains: Strain[] = [];
-  public currentCombo: number = 0;
-  public activeIntents: EnemyIntent[] = [];
-  public isCoreInDanger: boolean = false;
-
-  public lastEvent: WorldEvent | null = null;
-  public lastSquaresMatched: SquareMatch[] = [];
-  public eventLogs: EventLogEntry[] = [];
-  public animEvents: GameAnimEvent[] = [];
-
-  public stats: GameStats = {
+function emptyStats(): GameStats {
+  return {
     turnCount: 1,
     playerTerritory: 9,
     maxPlayerTerritory: 9,
+    enemiesCaptured: 0,
     totalSquaresCaptured: 0,
     largestSquareSize: 0,
     currentCombo: 0,
@@ -69,371 +51,473 @@ export class GameEngine {
     eventsSurvived: 0,
     speciesDistribution: { cyan: 0, coral: 0, yellow: 0, magenta: 0, violet: 0 },
   };
+}
 
-  private listeners: Set<EngineCallback> = new Set();
+export class GameEngine {
+  public seed: number;
+  public prng: PRNG;
+  public world: WorldManager;
+  public turn = 1;
+  public repaintCharges: number = GAME_CONFIG.startingRepaints;
+  public isRepaintMode = false;
+  public coreX = 0;
+  public coreY = 0;
+  public enemyCoreX: number | null = null;
+  public enemyCoreY: number | null = null;
+  public gameOver = false;
+  public gameWon = false;
+  public strains: Strain[] = [];
+  public currentCombo = 0;
+  public activeIntents: EnemyIntent[] = [];
+  public isCoreInDanger = false;
+  public lastEvent: WorldEvent | null = null;
+  public eventWarning: string | null = null;
+  public lastSquaresMatched: SquareMatch[] = [];
+  public eventLogs: EventLogEntry[] = [];
+  public animEvents: GameAnimEvent[] = [];
+  public stats = emptyStats();
+  public tutorialMode = false;
+  public tutorialTarget: CellKey | null = null;
+  public lastAction: 'reveal' | 'attack' | 'repaint' | null = null;
+  public suppressAi = false;
+  public dailyKey: string | undefined;
 
-  constructor(playerSpecies: SpeciesId = 'cyan', seed?: number) {
-    this.seed = seed ?? Math.floor(Math.random() * 1000000);
+  private listeners = new Set<EngineCallback>();
+
+  constructor(public playerSpecies: SpeciesId = 'cyan', seed = randomSeed()) {
+    this.seed = seed >>> 0;
     this.prng = new PRNG(this.seed);
     this.world = new WorldManager(this.seed);
-    this.playerSpecies = playerSpecies;
-
-    // Start small: 3x3 colony around Core (0,0) -> Starting Territory 9
-    this.world.initPlayerColony(this.playerSpecies);
-
+    this.world.initPlayerColony(playerSpecies);
+    if (playerSpecies === 'violet') {
+      for (const [dx, dy] of DIRS8) this.world.getCell(dx, dy).reinforcement = 2;
+      this.world.getCell(0, 0).reinforcement = 3;
+    }
     this.updateStats();
-    this.generateUpcomingIntents();
-    this.addLog(`Колония создана (Территория: 9). Защищайте Ядро!`, 'system');
+    this.addLog('A new colony wakes in the Black Substrate.', 'system');
   }
 
-  public subscribe(cb: EngineCallback): () => void {
-    this.listeners.add(cb);
-    return () => this.listeners.delete(cb);
+  public subscribe(callback: EngineCallback): () => void {
+    this.listeners.add(callback);
+    return () => this.listeners.delete(callback);
   }
 
   private notify() {
-    this.listeners.forEach((cb) => cb());
+    for (const listener of this.listeners) listener();
+  }
+
+  public refresh() {
+    this.updateStats();
+    this.validateAndCleanIntents();
+    this.notify();
   }
 
   public addLog(text: string, type: EventLogEntry['type']) {
     this.eventLogs.unshift({ turn: this.turn, text, type });
-    if (this.eventLogs.length > 50) this.eventLogs.pop();
+    this.eventLogs = this.eventLogs.slice(0, 40);
   }
 
   public getSpeciesPrediction(x: number, y: number): SpeciesPrediction {
-    return this.world.getSpeciesPrediction(x, y);
+    const prediction = this.world.getSpeciesPrediction(x, y);
+    if (this.playerSpecies === 'yellow' && this.turn % 3 === 0) {
+      const actual = this.world.getCell(x, y).naturalSpeciesId;
+      const others = (Object.keys(prediction.probabilities) as SpeciesId[]).filter((id) => id !== actual);
+      prediction.probabilities[actual] = 85;
+      let remaining = 15;
+      for (let i = 0; i < others.length; i++) {
+        const value = i === others.length - 1 ? remaining : Math.max(1, Math.round(15 / others.length));
+        prediction.probabilities[others[i]] = value;
+        remaining -= value;
+      }
+      prediction.likelySpecies = actual;
+      prediction.confidencePercent = 85;
+    }
+    return prediction;
   }
 
   public isAdjacentToPlayerTerritory(x: number, y: number): boolean {
-    for (const [dx, dy] of DIRS8) {
-      const nx = x + dx;
-      const ny = y + dy;
-      const neighbor = this.world.getExistingCell(nx, ny);
-      if (neighbor && neighbor.revealed && neighbor.currentSpeciesId === this.playerSpecies) {
-        return true;
-      }
-    }
-    return false;
+    return DIRS8.some(([dx, dy]) => {
+      const cell = this.world.getExistingCell(x + dx, y + dy);
+      return !!cell?.claimed && cell.currentSpeciesId === this.playerSpecies;
+    });
   }
 
-  /**
-   * Calculates local combat support attack probability (10% to 95%).
-   * base 30% + 20% * adjacent_allies - 15% * adjacent_defenders
-   */
-  public getAttackChance(x: number, y: number): number {
-    const targetCell = this.world.getExistingCell(x, y);
-    if (!targetCell || !targetCell.revealed || targetCell.currentSpeciesId === this.playerSpecies || targetCell.isCore) {
-      return 0;
+  public getAttackPreview(x: number, y: number): AttackPreview {
+    const target = this.world.getExistingCell(x, y);
+    const enemyCore = target?.isCore && x === this.enemyCoreX && y === this.enemyCoreY;
+    if (!target?.claimed || !target.revealed || target.isSnapHidden || target.currentSpeciesId === this.playerSpecies || (target.isCore && !enemyCore) || !this.isAdjacentToPlayerTerritory(x, y)) {
+      return { chance: 0, attackerSupport: 0, defenderSupport: 0 };
     }
-
-    let allySupport = 0;
+    let attackerSupport = 0;
     let defenderSupport = 0;
-
-    for (const [dx, dy] of DIRS4) {
-      const n = this.world.getExistingCell(x + dx, y + dy);
-      if (n && n.revealed) {
-        if (n.currentSpeciesId === this.playerSpecies) allySupport++;
-        else if (n.currentSpeciesId === targetCell.currentSpeciesId) defenderSupport++;
-      }
+    for (const [dx, dy] of DIRS8) {
+      const cell = this.world.getExistingCell(x + dx, y + dy);
+      if (!cell?.claimed) continue;
+      if (cell.currentSpeciesId === this.playerSpecies) attackerSupport++;
+      if (cell.currentSpeciesId === target.currentSpeciesId) defenderSupport++;
     }
-
-    let chance = GAME_CONFIG.attackBaseChance + (allySupport * GAME_CONFIG.attackAllySupportBonus) - (defenderSupport * GAME_CONFIG.attackDefenderSupportPenalty);
+    let chance = GAME_CONFIG.attackBaseChance
+      + Math.max(0, attackerSupport - 1) * GAME_CONFIG.attackAllySupportBonus
+      - Math.max(0, defenderSupport - 1) * GAME_CONFIG.attackDefenderSupportPenalty;
+    if (target.reinforcement > 1) chance -= 0.15;
+    if (target.strainId && this.strains.find((strain) => strain.id === target.strainId)?.trait === 'armored') chance -= 0.1;
+    if (this.playerSpecies === 'coral' && defenderSupport <= 1) chance += 0.1;
     chance = Math.max(GAME_CONFIG.attackMinChance, Math.min(GAME_CONFIG.attackMaxChance, chance));
-    return Math.round(chance * 100);
+    return { chance: Math.round(chance * 100), attackerSupport, defenderSupport };
+  }
+
+  public getAttackChance(x: number, y: number): number {
+    return this.getAttackPreview(x, y).chance;
   }
 
   public getCurrentEra() {
     for (let i = GAME_CONFIG.eras.length - 1; i >= 0; i--) {
-      if (this.turn >= GAME_CONFIG.eras[i].startTurn) {
-        return GAME_CONFIG.eras[i];
-      }
+      if (this.turn >= GAME_CONFIG.eras[i].startTurn) return GAME_CONFIG.eras[i];
     }
     return GAME_CONFIG.eras[0];
   }
 
+  public getTurnsUntilEvent(): number {
+    const remainder = this.turn % GAME_CONFIG.eventInterval;
+    return remainder === 0 ? GAME_CONFIG.eventInterval : GAME_CONFIG.eventInterval - remainder;
+  }
+
+  private getScheduledEventType(turn: number): WorldEventType {
+    const types = Object.keys(EVENT_COPY) as WorldEventType[];
+    const mixed = (this.seed ^ Math.imul(turn, 0x45d9f3b)) >>> 0;
+    return types[mixed % types.length];
+  }
+
   public generateUpcomingIntents() {
-    const era = this.getCurrentEra();
+    if (this.suppressAi) {
+      this.activeIntents = [];
+      this.isCoreInDanger = false;
+      return;
+    }
+    const eventActive = this.lastEvent && this.lastEvent.expiresTurn >= this.turn ? this.lastEvent : null;
+    let maxIntents: number = this.getCurrentEra().maxIntents;
+    if (eventActive?.type === 'BLOOM_TIDE') maxIntents++;
+    if (eventActive?.type === 'DROUGHT') maxIntents = Math.max(0, maxIntents - 1);
     this.activeIntents = SpreadSimulator.generateIntents(
       this.world,
       this.prng,
-      this.strains,
-      era.maxIntents,
+      maxIntents,
       this.playerSpecies,
+      this.turn,
       this.coreX,
-      this.coreY
+      this.coreY,
     );
     this.validateAndCleanIntents();
   }
 
   public validateAndCleanIntents() {
-    this.activeIntents = SpreadSimulator.validateIntents(this.activeIntents, this.world, this.playerSpecies);
-    this.isCoreInDanger = this.activeIntents.some((i) => i.isThreatToCore);
+    this.activeIntents = SpreadSimulator.validateIntents(this.activeIntents, this.world, this.playerSpecies, this.turn);
+    const coreKey = getCellKey(this.coreX, this.coreY);
+    this.isCoreInDanger = this.activeIntents.some((intent) => intent.targetCell === coreKey);
   }
 
-  // ACTION 1: REVEAL
+  public inspectObscuredCell(x: number, y: number): boolean {
+    const cell = this.world.getExistingCell(x, y);
+    if (!cell?.claimed || !cell.isSnapHidden) return false;
+    cell.isSnapHidden = false;
+    cell.obscuredUntilTurn = undefined;
+    this.notify();
+    return true;
+  }
+
   public revealCell(x: number, y: number): boolean {
     if (this.gameOver || this.gameWon) return false;
+    if (this.inspectObscuredCell(x, y)) return true;
+    if (this.tutorialMode && this.tutorialTarget && this.tutorialTarget !== getCellKey(x, y)) return false;
     const cell = this.world.getCell(x, y);
-    if (!cell || cell.revealed) return false;
-
-    if (!this.isAdjacentToPlayerTerritory(x, y)) return false;
-
+    if (cell.claimed || cell.revealed || !this.isAdjacentToPlayerTerritory(x, y)) return false;
+    if (cell.blockedUntilTurn && cell.blockedUntilTurn >= this.turn) return false;
     cell.revealed = true;
+    cell.claimed = true;
     cell.discoveredTurn = this.turn;
-
+    cell.lastChangedTurn = this.turn;
     const isPlayer = cell.naturalSpeciesId === this.playerSpecies;
-    if (isPlayer) {
-      cell.currentSpeciesId = this.playerSpecies;
-    }
-
-    this.animEvents = [];
-    this.animEvents.push({ type: 'reveal', x, y, species: cell.currentSpeciesId, isPlayer });
-
-    const initialKey = getCellKey(x, y);
-    this.processTurn([initialKey]);
+    cell.currentSpeciesId = cell.naturalSpeciesId;
+    this.animEvents = [{ type: 'reveal', x, y, species: cell.currentSpeciesId, isPlayer }];
+    this.lastAction = 'reveal';
+    this.addLog(isPlayer ? 'The frontier joins your colony.' : `${GAME_CONFIG.colors.species[cell.currentSpeciesId].name} discovered.`, 'reveal');
+    this.processTurn([getCellKey(x, y)]);
     return true;
   }
 
-  // ACTION 2: ATTACK (BASIC COMBAT)
   public attackCell(x: number, y: number): boolean {
     if (this.gameOver || this.gameWon) return false;
+    if (this.tutorialMode && this.tutorialTarget && this.tutorialTarget !== getCellKey(x, y)) return false;
+    const preview = this.getAttackPreview(x, y);
+    if (preview.chance <= 0) return false;
     const cell = this.world.getCell(x, y);
-    if (!cell || !cell.revealed || cell.currentSpeciesId === this.playerSpecies || cell.isCore) return false;
-
-    if (!this.isAdjacentToPlayerTerritory(x, y)) return false;
-
-    const chancePct = this.getAttackChance(x, y);
-    const roll = this.prng.next() * 100;
-    const success = roll < chancePct;
-
+    const success = this.tutorialMode || this.prng.next() * 100 < preview.chance;
+    this.lastAction = 'attack';
     this.animEvents = [];
-
     if (success) {
       cell.currentSpeciesId = this.playerSpecies;
-      cell.lastChangedTurn = this.turn;
+      cell.claimed = true;
+      cell.revealed = true;
+      cell.strainId = undefined;
       cell.reinforcement = 1;
+      cell.lastChangedTurn = this.turn;
+      this.stats.enemiesCaptured++;
       this.animEvents.push({ type: 'attackSuccess', x, y, species: this.playerSpecies });
-      this.addLog(`Атака на (${x},${y}) УСПЕШНА (${chancePct}%)!`, 'attack');
-      const initialKey = getCellKey(x, y);
-      this.processTurn([initialKey]);
+      if (cell.isCore && x === this.enemyCoreX && y === this.enemyCoreY) this.gameWon = true;
+      this.addLog(`Attack succeeded · ${preview.chance}%`, 'attack');
+      this.processTurn([getCellKey(x, y)]);
     } else {
       this.animEvents.push({ type: 'attackFailure', x, y });
-      this.addLog(`Атака на (${x},${y}) ОТБИТА (${chancePct}%)!`, 'attack');
+      this.addLog(`Attack failed · ${preview.chance}%`, 'attack');
       this.processTurn([]);
     }
-
     return true;
   }
 
-  // ACTION 3: REPAINT (GUARANTEED CONVERSION)
   public repaintCell(x: number, y: number): boolean {
-    if (this.gameOver || this.gameWon) return false;
-    if (this.repaintCharges <= 0) return false;
-    const cell = this.world.getCell(x, y);
-    if (!cell || !cell.revealed || cell.isCore) return false;
-
+    if (this.gameOver || this.gameWon || this.repaintCharges <= 0) return false;
+    if (this.tutorialMode && this.tutorialTarget && this.tutorialTarget !== getCellKey(x, y)) return false;
+    const cell = this.world.getExistingCell(x, y);
+    if (!cell?.claimed || !cell.revealed || cell.isSnapHidden || cell.isCore || cell.currentSpeciesId === this.playerSpecies) return false;
     if (!this.isAdjacentToPlayerTerritory(x, y)) return false;
-
     cell.currentSpeciesId = this.playerSpecies;
     cell.strainId = undefined;
+    cell.reinforcement = 1;
     cell.lastChangedTurn = this.turn;
     this.repaintCharges--;
+    this.lastAction = 'repaint';
     this.isRepaintMode = false;
-
-    this.animEvents = [];
-    const initialKey = getCellKey(x, y);
-    this.addLog(`Перекраска клетки (${x},${y}) [R] (Осталось: ${this.repaintCharges}/3)`, 'repaint');
-    this.processTurn([initialKey]);
+    this.stats.enemiesCaptured++;
+    this.animEvents = [{ type: 'attackSuccess', x, y, species: this.playerSpecies }];
+    this.addLog(`Repaint guaranteed capture · ${this.repaintCharges}/3`, 'repaint');
+    this.processTurn([getCellKey(x, y)]);
     return true;
   }
 
   public toggleRepaintMode() {
-    if (this.repaintCharges > 0) {
+    if (this.repaintCharges > 0 && !this.gameOver) {
       this.isRepaintMode = !this.isRepaintMode;
       this.notify();
     }
   }
 
-  private processTurn(dirtyCells: CellKey[]) {
-    this.turn++;
-    this.lastSquaresMatched = [];
-    this.currentCombo = 0;
-
-    // STEP 1: PLAYER SQUARES RESOLVE
-    const chainQueue = [...dirtyCells];
-    const processedSquares = new Set<string>();
-    let safetyLimit = 20;
-
-    while (chainQueue.length > 0 && safetyLimit > 0) {
-      safetyLimit--;
-      const candidateDirty = [...chainQueue];
-      chainQueue.length = 0;
-
-      const matches = SquareDetector.detectSquares(candidateDirty, this.world, this.strains);
-      if (matches.length === 0) break;
-
-      for (const match of matches) {
-        const sqKey = `${match.minX}:${match.minY}:${match.size}`;
-        if (processedSquares.has(sqKey)) continue;
-        processedSquares.add(sqKey);
-
-        this.currentCombo++;
-        this.lastSquaresMatched.push(match);
-        this.animEvents.push({ type: 'squareFill', match });
-
-        // Auto-fill interior cells with reinforced armor
-        const reinforcementVal = 3;
-        for (const interiorKey of match.interiorCells) {
-          const [ix, iy] = interiorKey.split(':').map(Number);
-          const cell = this.world.getCell(ix, iy);
-          cell.currentSpeciesId = match.speciesId;
-          cell.revealed = true;
-          cell.reinforcement = Math.max(cell.reinforcement, reinforcementVal);
-          cell.lastChangedTurn = this.turn;
-          chainQueue.push(interiorKey);
-        }
-
-        this.stats.totalSquaresCaptured++;
-        this.stats.largestSquareSize = Math.max(this.stats.largestSquareSize, match.size);
-
-        if (match.speciesId === this.playerSpecies) {
-          // Restore +1 Repaint charge for 4x4+ squares (max 3)
-          if (match.size >= 4 && this.repaintCharges < GAME_CONFIG.maxRepaints) {
-            this.repaintCharges++;
-            this.addLog(`Квадрат ${match.size}×${match.size}! +1 Заряд Перекраски [R] (${this.repaintCharges}/3)`, 'square');
-          } else {
-            this.addLog(`Захвачен квадрат ${match.size}×${match.size}!`, 'square');
+  public getLegalActions(): LegalActions {
+    const reveals = new Set<CellKey>();
+    const attacks = new Set<CellKey>();
+    const repaints = new Set<CellKey>();
+    for (const chunk of this.world.getLoadedChunks()) {
+      for (const cell of chunk.cells.values()) {
+        if (!cell.claimed || cell.currentSpeciesId !== this.playerSpecies) continue;
+        for (const [dx, dy] of DIRS8) {
+          const neighbor = this.world.getCell(cell.x + dx, cell.y + dy);
+          const key = getCellKey(neighbor.x, neighbor.y);
+          if (!neighbor.claimed && (!neighbor.blockedUntilTurn || neighbor.blockedUntilTurn < this.turn)) reveals.add(key);
+          if (neighbor.claimed && neighbor.revealed && !neighbor.isSnapHidden && neighbor.currentSpeciesId !== this.playerSpecies && !neighbor.isCore) {
+            attacks.add(key);
+            if (this.repaintCharges > 0) repaints.add(key);
           }
         }
       }
     }
+    return { reveals: [...reveals].sort(), attacks: [...attacks].sort(), repaints: [...repaints].sort() };
+  }
 
-    if (this.currentCombo > 1) {
-      this.addLog(`КОМБО КАСКАД ×${this.currentCombo}!`, 'combo');
+  public previewCompletedSquare(x: number, y: number, assumePlayer = true): number {
+    const cell = this.world.getCell(x, y);
+    const previous = { claimed: cell.claimed, revealed: cell.revealed, species: cell.currentSpeciesId };
+    if (assumePlayer) {
+      cell.claimed = true;
+      cell.revealed = true;
+      cell.currentSpeciesId = this.playerSpecies;
     }
-    this.stats.maxCombo = Math.max(this.stats.maxCombo, this.currentCombo);
+    const size = SquareDetector.detectSquares([getCellKey(x, y)], this.world, this.strains)
+      .filter((match) => match.speciesId === this.playerSpecies)
+      .reduce((max, match) => Math.max(max, match.size), 0);
+    cell.claimed = previous.claimed;
+    cell.revealed = previous.revealed;
+    cell.currentSpeciesId = previous.species;
+    return size;
+  }
 
-    // STEP 2: IMMEDIATE ZOMBIE INTENT CLEANUP
+  private resolveSquares(initial: CellKey[]): CellKey[] {
+    const changed: CellKey[] = [];
+    let queue = [...new Set(initial)].sort();
+    const processed = new Set<string>();
+    let safety = 32;
+    while (queue.length && safety-- > 0) {
+      const matches = SquareDetector.detectSquares(queue, this.world, this.strains);
+      queue = [];
+      for (const match of matches) {
+        const id = `${match.speciesId}:${match.minX}:${match.minY}:${match.size}`;
+        if (processed.has(id)) continue;
+        if (match.interiorCells.some((key) => {
+          const [x, y] = parseCellKey(key);
+          const blocked = this.world.getCell(x, y).blockedUntilTurn;
+          return !!blocked && blocked >= this.turn;
+        })) continue;
+        processed.add(id);
+        this.currentCombo++;
+        this.lastSquaresMatched.push(match);
+        this.animEvents.push({ type: 'squareFill', match });
+        for (const key of match.interiorCells) {
+          const [x, y] = parseCellKey(key);
+          const cell = this.world.getCell(x, y);
+          const altered = !cell.claimed || cell.currentSpeciesId !== match.speciesId || cell.reinforcement < 2;
+          cell.currentSpeciesId = match.speciesId;
+          cell.claimed = true;
+          cell.revealed = true;
+          cell.isSnapHidden = false;
+          cell.reinforcement = Math.max(cell.reinforcement, match.speciesId === 'cyan' ? 3 : 2);
+          cell.lastChangedTurn = this.turn;
+          if (altered) {
+            queue.push(key);
+            changed.push(key);
+          }
+        }
+        this.stats.totalSquaresCaptured++;
+        this.stats.largestSquareSize = Math.max(this.stats.largestSquareSize, match.size);
+        if (match.speciesId === this.playerSpecies && match.size >= 4) {
+          const resonance = this.lastEvent?.type === 'RESONANCE' && this.lastEvent.expiresTurn >= this.turn;
+          this.repaintCharges = Math.min(GAME_CONFIG.maxRepaints, this.repaintCharges + (resonance ? 2 : 1));
+        }
+      }
+      queue = [...new Set(queue)].sort();
+    }
+    return changed;
+  }
+
+  private processTurn(dirtyCells: CellKey[]) {
+    this.lastSquaresMatched = [];
+    this.currentCombo = 0;
+    this.resolveSquares(dirtyCells);
     this.validateAndCleanIntents();
 
-    // STEP 3: ENEMY INTENTS RESOLVE SEQUENTIALLY
-    const { anims, coreCaptured } = SpreadSimulator.resolveIntents(
-      this.activeIntents,
-      this.world,
-      this.playerSpecies,
-      this.coreX,
-      this.coreY
-    );
+    const resolution = this.suppressAi
+      ? { changedCells: [] as CellKey[], anims: [] as GameAnimEvent[], coreCaptured: false }
+      : SpreadSimulator.resolveIntents(this.activeIntents, this.world, this.prng, this.playerSpecies, this.coreX, this.coreY, this.turn);
+    this.animEvents.push(...resolution.anims);
+    this.activeIntents = [];
+    if (resolution.changedCells.length) this.resolveSquares(resolution.changedCells);
 
-    for (const anim of anims) {
-      this.animEvents.push(anim);
-    }
-
-    // CHECK SINGLE CORE CAPTURE LOSS CONDITION
-    if (coreCaptured) {
+    const core = this.world.getCell(this.coreX, this.coreY);
+    if (resolution.coreCaptured || core.currentSpeciesId !== this.playerSpecies) {
       this.gameOver = true;
+      this.isCoreInDanger = false;
       this.animEvents.push({ type: 'gameOver' });
-      this.addLog('ВАШЕ ЯДРО ВРАЖДЕБНО ЗАХВАЧЕНО! ПОРАЖЕНИЕ!', 'death');
+      this.addLog('Your Core was captured.', 'death');
     }
 
-    // STEP 4: WORLD EVENT TELEGRAPH & TRIGGER
-    const turnsUntilEvent = GAME_CONFIG.eventInterval - (this.turn % GAME_CONFIG.eventInterval);
-    if (turnsUntilEvent === 2) {
-      this.addLog(`⚠️ ВНИМАНИЕ: Через 2 хода произойдёт глобальная аномалия!`, 'event');
+    this.turn++;
+    this.stats.currentCombo = this.currentCombo;
+    this.stats.maxCombo = Math.max(this.stats.maxCombo, this.currentCombo);
+    if (this.currentCombo > 1) this.addLog(`Combo ×${this.currentCombo}`, 'combo');
+
+    for (const chunk of this.world.getLoadedChunks()) {
+      for (const cell of chunk.cells.values()) {
+        if (cell.obscuredUntilTurn && cell.obscuredUntilTurn < this.turn) {
+          cell.isSnapHidden = false;
+          cell.obscuredUntilTurn = undefined;
+        }
+        if (cell.blockedUntilTurn && cell.blockedUntilTurn < this.turn) {
+          cell.blockedUntilTurn = undefined;
+          if (!cell.claimed) cell.revealed = false;
+        }
+      }
     }
 
-    if (this.turn % GAME_CONFIG.eventInterval === 0) {
-      const { event } = WorldEventManager.triggerEvent(
-        this.turn, this.prng, this.world, this.strains, this.playerSpecies
-      );
+    if (!this.gameOver && this.turn % GAME_CONFIG.eventInterval === 0) {
+      const { event } = WorldEventManager.triggerEvent(this.turn, this.prng, this.world, this.strains, this.playerSpecies, this.getScheduledEventType(this.turn));
       this.lastEvent = event;
       this.stats.eventsSurvived++;
-      this.addLog(`[СОБЫТИЕ] ${event.title}`, 'event');
+      this.addLog(event.title, 'event');
       this.animEvents.push({ type: 'event', event });
     }
 
-    // STEP 5: GENERATE NEW ENEMY INTENTS FOR NEXT TURN
-    if (!this.gameOver && !this.gameWon) {
-      this.generateUpcomingIntents();
-    }
-
+    const turnsUntilEvent = this.getTurnsUntilEvent();
+    const eventTurn = this.turn + turnsUntilEvent;
+    this.eventWarning = turnsUntilEvent <= 2 ? `${EVENT_COPY[this.getScheduledEventType(eventTurn)][0]} in ${turnsUntilEvent}` : null;
+    this.validateAndCleanIntents();
+    if (!this.gameOver && !this.suppressAi) this.generateUpcomingIntents();
     this.updateStats();
+    RecordManager.update(this.stats, this.dailyKey);
     this.save();
     this.notify();
   }
 
   public updateStats() {
-    this.stats.turnCount = this.turn;
     const counts: Record<SpeciesId, number> = { cyan: 0, coral: 0, yellow: 0, magenta: 0, violet: 0 };
     for (const chunk of this.world.getLoadedChunks()) {
       for (const cell of chunk.cells.values()) {
-        // Territory counter counts actual OWNERSHIP of player cells!
-        if (cell.currentSpeciesId === this.playerSpecies) {
-          counts[this.playerSpecies]++;
-        } else if (cell.revealed) {
-          counts[cell.currentSpeciesId]++;
-        }
+        if (cell.claimed) counts[cell.currentSpeciesId]++;
       }
     }
+    this.stats.turnCount = this.turn;
     this.stats.speciesDistribution = counts;
-    this.stats.playerTerritory = counts[this.playerSpecies] || 0;
+    this.stats.playerTerritory = counts[this.playerSpecies];
     this.stats.maxPlayerTerritory = Math.max(this.stats.maxPlayerTerritory, this.stats.playerTerritory);
+    this.stats.mutationsDiscovered = this.strains.length;
   }
 
   public save() {
-    const revealedCells: Array<[number, number]> = [];
-    const modifiedCells: SaveData['modifiedCells'] = [];
+    if (this.tutorialMode) return;
+    const cells: SaveData['cells'] = [];
     for (const chunk of this.world.getLoadedChunks()) {
       for (const cell of chunk.cells.values()) {
-        if (cell.revealed) revealedCells.push([cell.x, cell.y]);
-        if (cell.currentSpeciesId !== cell.naturalSpeciesId || cell.reinforcement > 1 || cell.isCore) {
-          modifiedCells.push({
-            x: cell.x, y: cell.y,
-            currentSpeciesId: cell.currentSpeciesId,
-            strainId: cell.strainId,
-            reinforcement: cell.reinforcement,
-            revealed: cell.revealed,
-            isCore: cell.isCore,
-          });
-        }
+        if (!cell.claimed && !cell.revealed && !cell.isSnapHidden && !cell.blockedUntilTurn) continue;
+        cells.push({
+          x: cell.x,
+          y: cell.y,
+          currentSpeciesId: cell.currentSpeciesId,
+          claimed: cell.claimed,
+          revealed: cell.revealed,
+          strainId: cell.strainId,
+          reinforcement: cell.reinforcement,
+          isCore: cell.isCore,
+          isSnapHidden: cell.isSnapHidden,
+          obscuredUntilTurn: cell.obscuredUntilTurn,
+          blockedUntilTurn: cell.blockedUntilTurn,
+        });
       }
     }
     SaveManager.save({
-      version: 4, seed: this.seed, turn: this.turn,
+      version: SAVE_VERSION,
+      seed: this.seed,
+      turn: this.turn,
       playerSpecies: this.playerSpecies,
       repaintCharges: this.repaintCharges,
-      coreX: this.coreX, coreY: this.coreY,
+      coreX: this.coreX,
+      coreY: this.coreY,
       gameOver: this.gameOver,
-      revealedCells, modifiedCells,
-      strains: this.strains, stats: this.stats, eventLogs: this.eventLogs,
+      dailyKey: this.dailyKey,
+      cells,
+      strains: this.strains,
+      activeIntents: this.activeIntents,
+      lastEvent: this.lastEvent,
+      stats: this.stats,
+      eventLogs: this.eventLogs,
     });
   }
 
   public static loadFromSave(data: SaveData): GameEngine {
     const engine = new GameEngine(data.playerSpecies, data.seed);
     engine.turn = data.turn;
-    engine.repaintCharges = data.repaintCharges;
-    engine.coreX = data.coreX ?? 0;
-    engine.coreY = data.coreY ?? 0;
-    engine.gameOver = data.gameOver ?? false;
-    engine.strains = data.strains || [];
-    engine.stats = data.stats;
-    engine.eventLogs = data.eventLogs || [];
-
-    for (const [x, y] of data.revealedCells) {
-      const cell = engine.world.getCell(x, y);
-      cell.revealed = true;
+    engine.repaintCharges = Math.max(0, Math.min(GAME_CONFIG.maxRepaints, data.repaintCharges));
+    engine.coreX = data.coreX;
+    engine.coreY = data.coreY;
+    engine.gameOver = data.gameOver;
+    engine.dailyKey = data.dailyKey;
+    engine.strains = data.strains ?? [];
+    engine.stats = { ...emptyStats(), ...data.stats };
+    engine.eventLogs = data.eventLogs ?? [];
+    engine.lastEvent = data.lastEvent ?? null;
+    for (const saved of data.cells) {
+      const cell = engine.world.getCell(saved.x, saved.y);
+      Object.assign(cell, saved);
     }
-    for (const mod of data.modifiedCells) {
-      const cell = engine.world.getCell(mod.x, mod.y);
-      cell.currentSpeciesId = mod.currentSpeciesId;
-      cell.strainId = mod.strainId;
-      cell.reinforcement = mod.reinforcement;
-      cell.revealed = mod.revealed;
-      if (mod.isCore) cell.isCore = true;
-    }
+    engine.activeIntents = data.activeIntents ?? [];
+    engine.validateAndCleanIntents();
     engine.updateStats();
-    engine.generateUpcomingIntents();
+    if (!engine.activeIntents.length && !engine.gameOver) engine.generateUpcomingIntents();
     return engine;
   }
 }

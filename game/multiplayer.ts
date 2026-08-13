@@ -1,362 +1,281 @@
 import { joinRoom } from 'trystero/nostr';
-import { SpeciesId } from './config';
+import type { SpeciesId } from './config';
 import { GameEngine } from './engine';
-import { SquareMatch, WorldEvent } from './types';
+import type { SquareMatch, WorldEvent } from './types';
+
+export type MpActionType = 'reveal' | 'attack' | 'repaint';
+type PlayerRole = 'host' | 'guest';
 
 export interface MpActionMessage {
-  [key: string]: any;
-  type: 'reveal' | 'repaint';
+  [key: string]: unknown;
+  type: MpActionType;
   x: number;
   y: number;
-  playerId: string;
+  role: PlayerRole;
+}
+
+interface SyncedCell {
+  x: number;
+  y: number;
+  species: SpeciesId;
+  claimed: boolean;
+  revealed: boolean;
+  reinforcement: number;
+  isCore?: boolean;
 }
 
 export interface MpStateSyncMessage {
-  [key: string]: any;
+  [key: string]: unknown;
   turn: number;
-  activePlayerId: string;
-  revealedCells: Array<{ x: number; y: number; species: SpeciesId }>;
-  modifiedCells: Array<{ x: number; y: number; species: SpeciesId; reinforcement: number }>;
+  activePlayer: PlayerRole;
+  cells: SyncedCell[];
   lastEvent: WorldEvent | null;
   lastSquares: SquareMatch[];
-  hostShields: number;
-  guestShields: number;
-  winnerId?: string;
+  gameOver: boolean;
+  gameWon: boolean;
+  winner?: PlayerRole;
 }
 
 export interface MpInitMessage {
-  [key: string]: any;
+  [key: string]: unknown;
   seed: number;
   hostSpecies: SpeciesId;
   guestSpecies: SpeciesId;
   hostCore: [number, number];
   guestCore: [number, number];
-  hostPeerId: string;
 }
 
-export type MpCallback = (event: string, data?: any) => void;
+export type MpCallback = (event: 'connected' | 'sync' | 'disconnected' | 'error', data?: unknown) => void;
 
-function getActionPair(actionRes: any): [any, any] {
-  if (Array.isArray(actionRes)) {
-    return [actionRes[0], actionRes[1]];
-  }
-  if (actionRes && typeof actionRes === 'object') {
-    const keys = Object.keys(actionRes);
-    return [actionRes[keys[0]] || actionRes.send || actionRes[0], actionRes[keys[1]] || actionRes.get || actionRes[1]];
-  }
-  return [actionRes, actionRes];
+function actionPair(result: unknown): [(data: unknown) => void, (callback: (data: never, peerId: string) => void) => void] {
+  if (Array.isArray(result)) return [result[0], result[1]];
+  const value = result as Record<string, unknown>;
+  const keys = Object.keys(value ?? {});
+  return [(value?.send ?? value?.[keys[0]]) as (data: unknown) => void, (value?.get ?? value?.[keys[1]]) as (callback: (data: never, peerId: string) => void) => void];
 }
 
 export class MultiplayerManager {
-  public isHost: boolean = false;
-  public roomCode: string = '';
-  public peerId: string = '';
-  public opponentPeerId: string | null = null;
-  public isConnected: boolean = false;
-
-  private room: any = null;
-  private bcChannel: BroadcastChannel | null = null;
-  private sendAction: any;
-  private sendStateSync: any;
-  private sendInit: any;
-
+  public isHost = false;
+  public roomCode = '';
+  public isConnected = false;
   public hostSpecies: SpeciesId = 'cyan';
   public guestSpecies: SpeciesId = 'coral';
-
   public engine: GameEngine | null = null;
-  public activePlayerId: string = '';
+  public activePlayer: PlayerRole = 'host';
+  public winner: PlayerRole | undefined;
 
-  private listeners: Set<MpCallback> = new Set();
+  private room: ReturnType<typeof joinRoom> | null = null;
+  private channel: BroadcastChannel | null = null;
+  private sendAction?: (data: unknown) => void;
+  private sendSync?: (data: unknown) => void;
+  private sendInit?: (data: unknown) => void;
+  private listeners = new Set<MpCallback>();
 
-  constructor() {
-    this.peerId = Math.random().toString(36).substring(2, 9);
+  public subscribe(callback: MpCallback): () => void {
+    this.listeners.add(callback);
+    return () => this.listeners.delete(callback);
   }
 
-  public subscribe(cb: MpCallback): () => void {
-    this.listeners.add(cb);
-    return () => this.listeners.delete(cb);
+  private notify(event: Parameters<MpCallback>[0], data?: unknown) {
+    for (const listener of this.listeners) listener(event, data);
   }
 
-  private notify(event: string, data?: any) {
-    this.listeners.forEach((cb) => cb(event, data));
-  }
-
-  public hostRoom(roomCode: string, hostSpecies: SpeciesId) {
+  public hostRoom(code: string, species: SpeciesId) {
     this.isHost = true;
-    this.roomCode = roomCode.toUpperCase();
-    this.hostSpecies = hostSpecies;
-    this.guestSpecies = hostSpecies === 'cyan' ? 'coral' : 'cyan';
-
-    this.initRoom();
+    this.roomCode = code.trim().toUpperCase();
+    this.hostSpecies = species;
+    this.guestSpecies = species === 'coral' ? 'cyan' : 'coral';
+    this.initializeTransport();
   }
 
-  public joinRoom(roomCode: string, guestSpecies: SpeciesId) {
+  public joinRoom(code: string, species: SpeciesId) {
     this.isHost = false;
-    this.roomCode = roomCode.toUpperCase();
-    this.guestSpecies = guestSpecies;
-
-    this.initRoom();
+    this.roomCode = code.trim().toUpperCase();
+    this.guestSpecies = species;
+    this.initializeTransport();
   }
 
-  private initRoom() {
-    // Enable BroadcastChannel fallback for instant localhost tab-to-tab connections
+  private initializeTransport() {
+    if (!this.roomCode) {
+      this.notify('error');
+      return;
+    }
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      this.bcChannel = new BroadcastChannel(`fungal_mp_${this.roomCode}`);
-      this.bcChannel.onmessage = (e) => this.handleBcMessage(e.data);
-
-      if (!this.isHost) {
-        // Guest sends ping to host on localhost BroadcastChannel
-        setTimeout(() => {
-          this.bcChannel?.postMessage({ type: 'guest_hello', peerId: this.peerId });
-        }, 200);
-      }
+      this.channel = new BroadcastChannel(`mycelium:${this.roomCode}`);
+      this.channel.onmessage = ({ data }) => this.handleLocal(data);
+      if (!this.isHost) window.setTimeout(() => this.channel?.postMessage({ kind: 'hello' }), 120);
     }
-
     try {
-      const config = { appId: 'fungal_conquest_v1' };
-      this.room = joinRoom(config, this.roomCode);
-
-      if (this.room && typeof this.room.makeAction === 'function') {
-        const [sendAction, getAction] = getActionPair(this.room.makeAction('action'));
-        const [sendStateSync, getStateSync] = getActionPair(this.room.makeAction('sync'));
-        const [sendInit, getInit] = getActionPair(this.room.makeAction('init'));
-
-        this.sendAction = sendAction;
-        this.sendStateSync = sendStateSync;
-        this.sendInit = sendInit;
-
-        if (typeof this.room.onPeerJoin === 'function') {
-          this.room.onPeerJoin((peerId: string) => {
-            this.handlePeerConnect(peerId);
-          });
-        }
-
-        if (typeof this.room.onPeerLeave === 'function') {
-          this.room.onPeerLeave(() => {
-            this.handlePeerDisconnect();
-          });
-        }
-
-        if (getInit) {
-          getInit((data: MpInitMessage, peerId: string) => {
-            this.handleInitData(data, peerId);
-          });
-        }
-
-        if (getAction) {
-          getAction((msg: MpActionMessage) => {
-            this.handleActionMsg(msg);
-          });
-        }
-
-        if (getStateSync) {
-          getStateSync((data: MpStateSyncMessage) => {
-            this.handleSyncData(data);
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('Trystero WebRTC initialization warning:', e);
+      this.room = joinRoom({ appId: 'mycelium-v2' }, this.roomCode);
+      const [sendAction, getAction] = actionPair(this.room.makeAction('action'));
+      const [sendSync, getSync] = actionPair(this.room.makeAction('sync'));
+      const [sendInit, getInit] = actionPair(this.room.makeAction('init'));
+      this.sendAction = sendAction;
+      this.sendSync = sendSync;
+      this.sendInit = sendInit;
+      this.room.onPeerJoin = () => { if (this.isHost) this.connectHost(); };
+      this.room.onPeerLeave = () => { this.isConnected = false; this.notify('disconnected'); };
+      getAction((message: MpActionMessage) => this.receiveAction(message));
+      getSync((state: MpStateSyncMessage) => this.receiveSync(state));
+      getInit((data: MpInitMessage) => this.receiveInit(data));
+    } catch {
+      if (!this.channel) this.notify('error');
     }
   }
 
-  private handlePeerConnect(peerId: string) {
-    this.opponentPeerId = peerId;
+  private connectHost() {
+    if (!this.isHost || this.isConnected) return;
+    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    this.engine = new GameEngine(this.hostSpecies, seed);
+    this.engine.suppressAi = true;
+    this.engine.enemyCoreX = 12;
+    this.engine.enemyCoreY = 12;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const cell = this.engine.world.getCell(12 + dx, 12 + dy);
+        cell.currentSpeciesId = this.guestSpecies;
+        cell.naturalSpeciesId = this.guestSpecies;
+        cell.claimed = true;
+        cell.revealed = true;
+        cell.reinforcement = dx === 0 && dy === 0 ? 3 : 1;
+        cell.isCore = dx === 0 && dy === 0;
+      }
+    }
+    this.activePlayer = 'host';
     this.isConnected = true;
+    const init: MpInitMessage = { seed, hostSpecies: this.hostSpecies, guestSpecies: this.guestSpecies, hostCore: [0, 0], guestCore: [12, 12] };
+    this.sendInit?.(init);
+    this.channel?.postMessage({ kind: 'init', data: init });
+    this.notify('connected');
+    this.broadcastState();
+  }
 
-    if (this.isHost) {
-      const seed = Math.floor(Math.random() * 1000000);
-      const hostCore: [number, number] = [0, 0];
-      const guestCore: [number, number] = [10, 10];
+  private receiveInit(data: MpInitMessage) {
+    if (this.isHost) return;
+    this.hostSpecies = data.hostSpecies;
+    this.guestSpecies = data.guestSpecies;
+    this.engine = new GameEngine(this.guestSpecies, data.seed);
+    this.engine.suppressAi = true;
+    this.engine.coreX = data.guestCore[0];
+    this.engine.coreY = data.guestCore[1];
+    this.engine.enemyCoreX = data.hostCore[0];
+    this.engine.enemyCoreY = data.hostCore[1];
+    this.isConnected = true;
+    this.notify('connected');
+  }
 
-      this.engine = new GameEngine(this.hostSpecies, seed);
-      this.engine.coreX = 0;
-      this.engine.coreY = 0;
-      this.engine.enemyCoreX = guestCore[0];
-      this.engine.enemyCoreY = guestCore[1];
+  private withActingPlayer(role: PlayerRole, action: () => boolean): boolean {
+    if (!this.engine) return false;
+    const game = this.engine;
+    const original = { species: game.playerSpecies, coreX: game.coreX, coreY: game.coreY, enemyX: game.enemyCoreX, enemyY: game.enemyCoreY };
+    if (role === 'guest') {
+      game.playerSpecies = this.guestSpecies;
+      game.coreX = 12;
+      game.coreY = 12;
+      game.enemyCoreX = 0;
+      game.enemyCoreY = 0;
+    } else {
+      game.playerSpecies = this.hostSpecies;
+      game.coreX = 0;
+      game.coreY = 0;
+      game.enemyCoreX = 12;
+      game.enemyCoreY = 12;
+    }
+    const success = action();
+    game.playerSpecies = original.species;
+    game.coreX = original.coreX;
+    game.coreY = original.coreY;
+    game.enemyCoreX = original.enemyX;
+    game.enemyCoreY = original.enemyY;
+    game.updateStats();
+    return success;
+  }
 
-      const guestCoreCell = this.engine.world.getCell(guestCore[0], guestCore[1]);
-      guestCoreCell.currentSpeciesId = this.guestSpecies;
-      guestCoreCell.revealed = true;
-      guestCoreCell.isCore = true;
-      guestCoreCell.reinforcement = 3;
+  private applyAction(message: MpActionMessage): boolean {
+    return this.withActingPlayer(message.role, () => {
+      if (!this.engine) return false;
+      if (message.type === 'reveal') return this.engine.revealCell(message.x, message.y);
+      if (message.type === 'attack') return this.engine.attackCell(message.x, message.y);
+      return this.engine.repaintCell(message.x, message.y);
+    });
+  }
 
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          const c = this.engine.world.getCell(guestCore[0] + dx, guestCore[1] + dy);
-          c.currentSpeciesId = this.guestSpecies;
-          c.revealed = true;
-          c.reinforcement = 2;
-        }
-      }
-
-      this.activePlayerId = this.peerId;
-
-      const initPayload: MpInitMessage = {
-        seed,
-        hostSpecies: this.hostSpecies,
-        guestSpecies: this.guestSpecies,
-        hostCore,
-        guestCore,
-        hostPeerId: this.peerId,
-      };
-
-      if (this.sendInit) this.sendInit(initPayload);
-      if (this.bcChannel) this.bcChannel.postMessage({ type: 'init', payload: initPayload, peerId: this.peerId });
-
-      this.notify('connected');
+  private receiveAction(message: MpActionMessage) {
+    if (!this.isHost || message.role !== this.activePlayer) return;
+    if (this.applyAction(message)) {
+      if (this.engine?.gameWon) this.winner = message.role;
+      this.activePlayer = message.role === 'host' ? 'guest' : 'host';
       this.broadcastState();
+      if (this.winner === 'guest' && this.engine) { this.engine.gameWon = false; this.engine.gameOver = true; this.engine.refresh(); }
     }
   }
 
-  private handlePeerDisconnect() {
-    this.isConnected = false;
-    this.opponentPeerId = null;
-    this.notify('disconnected');
-  }
-
-  private handleInitData(data: MpInitMessage, peerId: string) {
-    if (!this.isHost) {
-      this.opponentPeerId = peerId;
-      this.isConnected = true;
-      this.hostSpecies = data.hostSpecies;
-      this.guestSpecies = data.guestSpecies;
-
-      this.engine = new GameEngine(data.guestSpecies, data.seed);
-      this.engine.coreX = data.guestCore[0];
-      this.engine.coreY = data.guestCore[1];
-      this.engine.enemyCoreX = data.hostCore[0];
-      this.engine.enemyCoreY = data.hostCore[1];
-
-      this.notify('connected');
-    }
-  }
-
-  private handleActionMsg(msg: MpActionMessage) {
-    if (this.isHost && this.engine) {
-      if (this.activePlayerId !== msg.playerId) return;
-
-      let success = false;
-      if (msg.type === 'reveal') {
-        success = this.engine.revealCell(msg.x, msg.y);
-      } else if (msg.type === 'repaint') {
-        success = this.engine.repaintCell(msg.x, msg.y);
-      }
-
-      if (success) {
-        this.activePlayerId = this.opponentPeerId || msg.playerId;
-        this.broadcastState();
-      }
-    }
-  }
-
-  private handleSyncData(data: MpStateSyncMessage) {
-    if (!this.isHost && this.engine) {
-      this.engine.turn = data.turn;
-      this.activePlayerId = data.activePlayerId;
-
-      for (const item of data.revealedCells) {
-        const c = this.engine.world.getCell(item.x, item.y);
-        c.revealed = true;
-        c.currentSpeciesId = item.species;
-      }
-
-      for (const mod of data.modifiedCells) {
-        const c = this.engine.world.getCell(mod.x, mod.y);
-        c.currentSpeciesId = mod.species;
-        c.reinforcement = mod.reinforcement;
-      }
-
-      this.engine.lastEvent = data.lastEvent;
-      this.engine.lastSquaresMatched = data.lastSquares;
-      this.engine.updateStats();
-
-      this.notify('sync');
-    }
-  }
-
-  private handleBcMessage(msg: any) {
-    if (!msg || typeof msg !== 'object') return;
-
-    if (msg.type === 'guest_hello' && this.isHost) {
-      this.handlePeerConnect(msg.peerId);
-    } else if (msg.type === 'init' && !this.isHost) {
-      this.handleInitData(msg.payload, msg.peerId);
-    } else if (msg.type === 'action' && this.isHost) {
-      this.handleActionMsg(msg.payload);
-    } else if (msg.type === 'sync' && !this.isHost) {
-      this.handleSyncData(msg.payload);
-    }
-  }
-
-  public performAction(x: number, y: number, type: 'reveal' | 'repaint'): boolean {
+  public performAction(x: number, y: number, type: MpActionType): boolean {
     if (!this.engine || !this.isConnected) return false;
-    if (this.activePlayerId !== this.peerId) return false;
-
+    const role: PlayerRole = this.isHost ? 'host' : 'guest';
+    if (this.activePlayer !== role) return false;
+    const message: MpActionMessage = { type, x, y, role };
     if (this.isHost) {
-      let success = false;
-      if (type === 'reveal') {
-        success = this.engine.revealCell(x, y);
-      } else {
-        success = this.engine.repaintCell(x, y);
-      }
-
+      const success = this.applyAction(message);
       if (success) {
-        this.activePlayerId = this.opponentPeerId!;
+        if (this.engine?.gameWon) this.winner = 'host';
+        this.activePlayer = 'guest';
         this.broadcastState();
       }
       return success;
-    } else {
-      const payload: MpActionMessage = { type, x, y, playerId: this.peerId };
-      if (this.sendAction) this.sendAction(payload);
-      if (this.bcChannel) this.bcChannel.postMessage({ type: 'action', payload });
-      return true;
     }
+    this.sendAction?.(message);
+    this.channel?.postMessage({ kind: 'action', data: message });
+    return true;
   }
 
-  public broadcastState() {
+  private broadcastState() {
     if (!this.isHost || !this.engine) return;
-
-    const revealedCells: Array<{ x: number; y: number; species: SpeciesId }> = [];
-    const modifiedCells: Array<{ x: number; y: number; species: SpeciesId; reinforcement: number }> = [];
-
+    const cells: SyncedCell[] = [];
     for (const chunk of this.engine.world.getLoadedChunks()) {
       for (const cell of chunk.cells.values()) {
-        if (cell.revealed) {
-          revealedCells.push({ x: cell.x, y: cell.y, species: cell.currentSpeciesId });
-        }
-        if (cell.reinforcement > 1) {
-          modifiedCells.push({ x: cell.x, y: cell.y, species: cell.currentSpeciesId, reinforcement: cell.reinforcement });
-        }
+        if (!cell.claimed && !cell.revealed) continue;
+        cells.push({ x: cell.x, y: cell.y, species: cell.currentSpeciesId, claimed: cell.claimed, revealed: cell.revealed, reinforcement: cell.reinforcement, isCore: cell.isCore });
       }
     }
+    const state: MpStateSyncMessage = { turn: this.engine.turn, activePlayer: this.activePlayer, cells, lastEvent: this.engine.lastEvent, lastSquares: this.engine.lastSquaresMatched, gameOver: this.engine.gameOver, gameWon: this.engine.gameWon, winner: this.winner };
+    this.sendSync?.(state);
+    this.channel?.postMessage({ kind: 'sync', data: state });
+  }
 
-    const payload: MpStateSyncMessage = {
-      turn: this.engine.turn,
-      activePlayerId: this.activePlayerId,
-      revealedCells,
-      modifiedCells,
-      lastEvent: this.engine.lastEvent,
-      lastSquares: this.engine.lastSquaresMatched,
-      hostShields: 1,
-      guestShields: 1,
-    };
+  private receiveSync(state: MpStateSyncMessage) {
+    if (this.isHost || !this.engine) return;
+    this.activePlayer = state.activePlayer;
+    this.engine.turn = state.turn;
+    for (const item of state.cells) {
+      const cell = this.engine.world.getCell(item.x, item.y);
+      cell.currentSpeciesId = item.species;
+      cell.claimed = item.claimed;
+      cell.revealed = item.revealed;
+      cell.reinforcement = item.reinforcement;
+      cell.isCore = item.isCore;
+    }
+    this.engine.lastEvent = state.lastEvent;
+    this.engine.lastSquaresMatched = state.lastSquares;
+    this.winner = state.winner;
+    this.engine.gameOver = state.winner ? state.winner !== 'guest' : state.gameOver;
+    this.engine.gameWon = state.winner === 'guest' || (!state.winner && state.gameWon);
+    this.engine.refresh();
+    this.notify('sync');
+  }
 
-    if (this.sendStateSync) this.sendStateSync(payload);
-    if (this.bcChannel) this.bcChannel.postMessage({ type: 'sync', payload });
+  private handleLocal(message: { kind: string; data?: never }) {
+    if (message.kind === 'hello' && this.isHost) this.connectHost();
+    if (message.kind === 'init' && !this.isHost && message.data) this.receiveInit(message.data as MpInitMessage);
+    if (message.kind === 'action' && this.isHost && message.data) this.receiveAction(message.data as MpActionMessage);
+    if (message.kind === 'sync' && !this.isHost && message.data) this.receiveSync(message.data as MpStateSyncMessage);
   }
 
   public leave() {
-    if (this.bcChannel) {
-      try { this.bcChannel.close(); } catch (_) {}
-      this.bcChannel = null;
-    }
-    if (this.room) {
-      try {
-        if (typeof this.room.leave === 'function') this.room.leave();
-      } catch (_) {}
-      this.room = null;
-    }
+    this.channel?.close();
+    this.channel = null;
+    this.room?.leave();
+    this.room = null;
     this.isConnected = false;
   }
 }

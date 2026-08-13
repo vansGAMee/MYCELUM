@@ -1,34 +1,20 @@
-import type { Metadata } from "next";
-import "./globals.css";
+import type { Metadata } from 'next';
+import './globals.css';
+
+const title = 'MYCELIUM — Living Territory Strategy';
+const description = 'Reveal uncertain cells, attack neighboring colonies, close same-color squares, read enemy intentions, and protect your Core.';
 
 export const metadata: Metadata = {
-  title: "MYCELIUM - Microbial Conquest & Core Defense",
-  description: "A dark tactical territory growth game rendered with PixiJS.",
+  metadataBase: new URL('https://mycelium-game.vercel.app'),
+  title,
+  description,
+  applicationName: 'MYCELIUM',
+  keywords: ['strategy game', 'browser game', 'territory game', 'puzzle strategy', 'multiplayer'],
+  manifest: '/manifest.webmanifest',
+  openGraph: { title, description, type: 'website', images: [{ url: '/social-preview.svg', width: 1200, height: 630, alt: 'MYCELIUM — Read the colony. Close the square. Protect the Core.' }] },
+  twitter: { card: 'summary_large_image', title, description, images: ['/social-preview.svg'] },
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  return (
-    <html lang="en">
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Outfit:wght@500;700;900&display=swap" rel="stylesheet" />
-      </head>
-      <body style={{
-        backgroundColor: '#030305',
-        color: '#f4f4f5',
-        fontFamily: '"Outfit", -apple-system, BlinkMacSystemFont, sans-serif',
-        overflow: 'hidden',
-        margin: 0,
-        padding: 0,
-        userSelect: 'none',
-      }}>
-        {children}
-      </body>
-    </html>
-  );
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <html lang="en"><body>{children}</body></html>;
 }
