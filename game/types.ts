@@ -27,8 +27,17 @@ export interface Strain {
   speciesId: SpeciesId;
   name: string;
   trait: SecondaryTrait;
+  traits?: SecondaryTrait[];
+  parentSpeciesIds?: [SpeciesId, SpeciesId];
   colorHex: number;
   cssHex: string;
+}
+
+export interface DuelPickup {
+  type: 'sporeBomb';
+  x: number;
+  y: number;
+  spawnedRound: number;
 }
 
 export interface EnemyIntent {
@@ -122,6 +131,7 @@ export type GameAnimEvent =
   | { type: 'reveal'; x: number; y: number; species: SpeciesId; isPlayer: boolean }
   | { type: 'attackSuccess'; x: number; y: number; species: SpeciesId }
   | { type: 'attackFailure'; x: number; y: number }
+  | { type: 'bombExplosion'; x: number; y: number }
   | { type: 'squareFill'; match: SquareMatch }
   | { type: 'spread'; fromX: number; fromY: number; toX: number; toY: number; species: SpeciesId }
   | { type: 'event'; event: WorldEvent }

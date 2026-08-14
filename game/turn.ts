@@ -54,6 +54,49 @@ function hasTurnServer(servers: RTCIceServer[]): boolean {
   return servers.some(({ urls }) => (Array.isArray(urls) ? urls : [urls]).some((url) => url.startsWith('turn:') || url.startsWith('turns:')));
 }
 
+function relayPriority(url: string): number {
+  const lower = url.toLowerCase();
+  const tcp = /[?&]transport=tcp(?:&|$)/.test(lower);
+  const port443 = /:443(?:[/?]|$)/.test(lower);
+  if (lower.startsWith('turns:') && port443 && tcp) return 0;
+  if (lower.startsWith('turn:') && port443 && !tcp) return 1;
+  if (lower.startsWith('turn:') && tcp) return 2;
+  if (lower.startsWith('turns:')) return 3;
+  return 4;
+}
+
+export function prioritizeRelayIceServers(servers: RTCIceServer[]): RTCIceServer[] {
+  const flattened = servers.flatMap((server) => (Array.isArray(server.urls) ? server.urls : [server.urls])
+    .filter((url) => url.startsWith('turn:') || url.startsWith('turns:'))
+    .map((url) => ({
+      urls: url,
+      ...(server.username !== undefined ? { username: server.username } : {}),
+      ...(server.credential !== undefined ? { credential: server.credential } : {}),
+    })));
+  const unique = new Map<string, RTCIceServer>();
+  for (const server of flattened) {
+    const key = `${server.urls}|${server.username ?? ''}|${String(server.credential ?? '')}`;
+    if (!unique.has(key)) unique.set(key, server);
+  }
+  return [...unique.values()].sort((a, b) => relayPriority(a.urls as string) - relayPriority(b.urls as string));
+}
+
+export function relayIceServersFromTurnConfiguration(configuration: ResolvedTurnConfiguration): RTCIceServer[] {
+  if (configuration.mode === 'none') return [];
+  const servers: RTCIceServer[] = configuration.mode === 'rtc'
+    ? configuration.iceServers
+    : configuration.turnServers.map((server) => ({
+      urls: server.urls,
+      username: server.username,
+      credential: server.credential,
+    }));
+  return prioritizeRelayIceServers(servers);
+}
+
+export function listIceServerUrls(servers: RTCIceServer[]): string[] {
+  return servers.flatMap((server) => Array.isArray(server.urls) ? server.urls : [server.urls]);
+}
+
 export function buildStaticTurnConfig(environment: PublicTurnEnvironment): TurnServerConfig[] | null {
   const urls = clean(environment.turnUrl)?.split(',').map((url) => url.trim()).filter(validIceUrl)
     .filter((url) => url.startsWith('turn:') || url.startsWith('turns:'));

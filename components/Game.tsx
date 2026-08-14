@@ -273,6 +273,7 @@ export function Game() {
     roomCode: manager.roomCode,
     opponentSpecies: manager.isHost ? manager.guestSpecies : manager.hostSpecies,
     disconnected: mpDisconnected,
+    bonusTurn: manager.bonusTurnFor === manager.getRole(),
   } : undefined;
   const actionFeedback = engine.lastResult ?? (manager?.lastMove
     ? { id: manager.lastMove.id, title: manager.lastMove.title, detail: manager.lastMove.detail, tone: manager.lastMove.accepted ? 'good' as const : 'bad' as const }

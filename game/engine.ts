@@ -9,6 +9,7 @@ import type {
   AttackPreview,
   ActionResult,
   CellKey,
+  DuelPickup,
   EnemyIntent,
   EventLogEntry,
   GameAnimEvent,
@@ -83,6 +84,9 @@ export class GameEngine {
   public suppressAi = false;
   public dailyKey: string | undefined;
   public multiplayerMode = false;
+  public duelPickup: DuelPickup | null = null;
+  public duelBombCharges = 0;
+  public isDuelBombMode = false;
   public lastResult: ActionResult | null = null;
   private resultSequence = 0;
 
@@ -190,7 +194,8 @@ export class GameEngine {
       - Math.max(0, defenderSupport - 1) * GAME_CONFIG.attackDefenderSupportPenalty;
     if (target.reinforcement > 2) chance -= 0.25;
     else if (target.reinforcement > 1) chance -= 0.15;
-    if (target.strainId && this.strains.find((strain) => strain.id === target.strainId)?.trait === 'armored') chance -= 0.1;
+    const targetStrain = target.strainId ? this.strains.find((strain) => strain.id === target.strainId) : undefined;
+    if (targetStrain && (targetStrain.trait === 'armored' || targetStrain.traits?.includes('armored'))) chance -= 0.1;
     if (this.playerSpecies === 'coral' && defenderSupport <= 1) chance += 0.1;
     chance = Math.max(GAME_CONFIG.attackMinChance, Math.min(GAME_CONFIG.attackMaxChance, chance));
     return { chance: Math.round(chance * 100), attackerSupport, defenderSupport };
@@ -291,13 +296,15 @@ export class GameEngine {
     return true;
   }
 
-  public attackCell(x: number, y: number): boolean {
+  public attackCell(x: number, y: number, useDuelBomb = false): boolean {
     if (this.gameOver || this.gameWon) return false;
     if (this.tutorialMode && this.tutorialTarget && this.tutorialTarget !== getCellKey(x, y)) return false;
     const preview = this.getAttackPreview(x, y);
     if (preview.chance <= 0) return false;
     const cell = this.world.getCell(x, y);
-    const success = this.tutorialMode || this.prng.next() * 100 < preview.chance;
+    const bombAttack = useDuelBomb && this.multiplayerMode && this.duelBombCharges > 0 && !cell.isCore && cell.reinforcement > 1;
+    if (useDuelBomb && !bombAttack) return false;
+    const success = bombAttack || this.tutorialMode || this.prng.next() * 100 < preview.chance;
     this.lastAction = 'attack';
     this.animEvents = [];
     if (success) {
@@ -310,8 +317,16 @@ export class GameEngine {
       this.stats.enemiesCaptured++;
       this.animEvents.push({ type: 'attackSuccess', x, y, species: this.playerSpecies });
       if (cell.isCore && x === this.enemyCoreX && y === this.enemyCoreY) this.gameWon = true;
-      this.addLog(`Атака успешна · ${preview.chance}%`, 'attack');
-      this.setResult('Атака закрепилась', `${preview.chance}% · поддержка союзников: ${preview.attackerSupport}, защитников: ${preview.defenderSupport}.`, 'good');
+      if (bombAttack) {
+        this.duelBombCharges--;
+        this.isDuelBombMode = false;
+        this.animEvents.push({ type: 'bombExplosion', x, y });
+        this.addLog('Споровая бомба разрушила укреплённую клетку.', 'attack');
+        this.setResult('Споровая бомба сработала', 'Укрепление квадрата уничтожено гарантированно. Ядра защищены от этого оружия.', 'good');
+      } else {
+        this.addLog(`Атака успешна · ${preview.chance}%`, 'attack');
+        this.setResult('Атака закрепилась', `${preview.chance}% · поддержка союзников: ${preview.attackerSupport}, защитников: ${preview.defenderSupport}.`, 'good');
+      }
       this.processTurn([getCellKey(x, y)]);
     } else {
       this.animEvents.push({ type: 'attackFailure', x, y });
@@ -346,6 +361,15 @@ export class GameEngine {
   public toggleRepaintMode() {
     if (this.repaintCharges > 0 && !this.gameOver) {
       this.isRepaintMode = !this.isRepaintMode;
+      if (this.isRepaintMode) this.isDuelBombMode = false;
+      this.notify();
+    }
+  }
+
+  public toggleDuelBombMode() {
+    if (this.multiplayerMode && this.duelBombCharges > 0 && !this.gameOver && !this.gameWon) {
+      this.isDuelBombMode = !this.isDuelBombMode;
+      if (this.isDuelBombMode) this.isRepaintMode = false;
       this.notify();
     }
   }

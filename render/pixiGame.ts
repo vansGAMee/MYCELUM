@@ -153,7 +153,8 @@ export class PixiGameRenderer {
       const { tileX, tileY } = this.camera.worldToTile(wp.x, wp.y);
       this.hoverTileX = tileX;
       this.hoverTileY = tileY;
-      const hoverKey = `${tileX}:${tileY}:${this.engine.isRepaintMode}`;
+      const pickupKey = this.engine.duelPickup ? `${this.engine.duelPickup.x}:${this.engine.duelPickup.y}` : '-';
+      const hoverKey = `${tileX}:${tileY}:${this.engine.isRepaintMode}:${this.engine.isDuelBombMode}:${pickupKey}`;
       if (hoverKey !== this.lastHoverKey) {
         this.lastHoverKey = hoverKey;
         this.emitHover(tileX, tileY, e.clientX, e.clientY);
@@ -214,8 +215,16 @@ export class PixiGameRenderer {
   private emitHover(x: number, y: number, clientX: number, clientY: number) {
     const cell = this.engine.world.getCell(x, y);
     const adjacent = this.engine.isAdjacentToPlayerTerritory(x, y);
+    const pickupHere = this.engine.duelPickup?.x === x && this.engine.duelPickup.y === y;
     let detail: Record<string, unknown> | null = null;
-    if (cell.isSnapHidden && cell.claimed) {
+    if (pickupHere) {
+      detail = {
+        x: clientX,
+        y: clientY,
+        title: 'СПОРОВАЯ БОМБА',
+        lines: ['Первый, кто захватит эту клетку, получит один заряд.', 'Заряд гарантированно ломает укрепление квадрата.', 'Ядра невосприимчивы.'],
+      };
+    } else if (cell.isSnapHidden && cell.claimed) {
       const denseFog = !!cell.obscuredUntilTurn && cell.obscuredUntilTurn >= this.engine.turn;
       detail = {
         x: clientX,
@@ -237,13 +246,17 @@ export class PixiGameRenderer {
       const preview = this.engine.getAttackPreview(x, y);
       const square = this.engine.previewCompletedSquare(x, y);
       const mutation = cell.strainId ? this.engine.strains.find((strain) => strain.id === cell.strainId) : undefined;
-      const mutationLine = mutation ? `${mutation.trait === 'swift' ? 'СТРЕМИТЕЛЬНАЯ · действует раньше' : mutation.trait === 'armored' ? 'БРОНИРОВАННАЯ · требует сильной поддержки' : 'ПАРАЗИТ · вторгается по диагонали'}` : null;
+      const traits = mutation?.traits ?? (mutation ? [mutation.trait] : []);
+      const mutationLine = mutation ? `${mutation.parentSpeciesIds ? `ГИБРИД ${mutation.name.toUpperCase()} · ` : ''}${traits.map((trait) => trait === 'swift' ? 'стремительный' : trait === 'armored' ? 'бронированный' : 'паразитический').join(' + ')}` : null;
+      const bombTarget = this.engine.isDuelBombMode;
       detail = {
         x: clientX,
         y: clientY,
-        title: this.engine.isRepaintMode ? `ПЕРЕКРАСИТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : `АТАКОВАТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}`,
+        title: this.engine.isRepaintMode ? `ПЕРЕКРАСИТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : bombTarget ? `БОМБА: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : `АТАКОВАТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}`,
         lines: this.engine.isRepaintMode
           ? ['Гарантированный захват', `Заряды: ${this.engine.repaintCharges}/3`, ...(mutationLine ? [mutationLine] : []), ...(square ? [`ЗАМКНЁТ ${square}×${square}`] : [])]
+          : bombTarget
+            ? [cell.isCore ? 'ЯДРО НЕВОСПРИИМЧИВО' : cell.reinforcement > 1 ? 'ГАРАНТИРОВАННО РАЗРУШИТ УКРЕПЛЕНИЕ' : 'ЦЕЛЬ НЕ УКРЕПЛЕНА · БОМБА НЕ СРАБОТАЕТ', ...(mutationLine ? [mutationLine] : [])]
           : [`УСПЕХ ${preview.chance}%`, `Поддержка атаки: ${preview.attackerSupport}`, `Поддержка защиты: ${preview.defenderSupport}`, ...(mutationLine ? [mutationLine] : []), ...(square ? [`ЗАМКНЁТ ${square}×${square}`] : [])],
       };
     } else {
@@ -270,6 +283,10 @@ export class PixiGameRenderer {
       if (ev.type === 'attackSuccess' || ev.type === 'attackFailure') {
         const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
         this.particles.burst(ev.x * step, ev.y * step, ev.type === 'attackSuccess' ? GAME_CONFIG.colors.species[ev.species].hex : 0x7f3434, ev.type === 'attackSuccess' ? 18 : 9);
+      }
+      if (ev.type === 'bombExplosion') {
+        const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
+        this.particles.burst(ev.x * step, ev.y * step, 0xe5a84f, 42);
       }
       if (ev.type === 'spread') {
         const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
@@ -433,6 +450,19 @@ export class PixiGameRenderer {
   private renderCore() {
     this.coreGfx.clear();
     const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
+    if (this.engine.duelPickup) {
+      const px = this.engine.duelPickup.x * step;
+      const py = this.engine.duelPickup.y * step;
+      const pulse = 1 + Math.sin(this.corePulse * 3.2) * 0.12;
+      this.coreGfx.circle(px, py, 18 * pulse);
+      this.coreGfx.fill({ color: 0xe5a84f, alpha: 0.14 });
+      this.coreGfx.stroke({ color: 0xffd28a, alpha: 0.9, width: 2 });
+      this.coreGfx.poly([px, py - 9, px + 9, py, px, py + 9, px - 9, py]);
+      this.coreGfx.fill({ color: 0xe5a84f, alpha: 0.92 });
+      this.coreGfx.moveTo(px + 5, py - 7);
+      this.coreGfx.quadraticCurveTo(px + 10, py - 17, px + 15, py - 12);
+      this.coreGfx.stroke({ color: 0xffe0a8, alpha: 0.85, width: 2 });
+    }
     const cx = this.engine.coreX * step;
     const cy = this.engine.coreY * step;
     const sp = GAME_CONFIG.colors.species[this.engine.playerSpecies];

@@ -78,7 +78,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .action-hint { color: #747d76; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; text-shadow: 0 2px 10px #000; }
 .repaint-button { pointer-events: auto; border: 1px solid rgba(232,236,232,.24); background: rgba(5,7,6,.82); padding: 10px 15px; cursor: pointer; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; backdrop-filter: blur(12px); }
 .repaint-button.active { color: #07110d; background: var(--cyan); border-color: var(--cyan); }
+.bomb-button { color: #e5b56a; border-color: rgba(229,181,106,.42); }
+.bomb-button.active { color: #130b03; background: #e5a84f; border-color: #ffd28a; box-shadow: 0 0 22px rgba(229,168,79,.25); }
 .repaint-button:disabled { opacity: .35; cursor: default; }
+.duel-pickup { color: #d5a45c; }
+.duel-pickup.ready { color: #f0c77f; }
 .event-warning { position: fixed; z-index: 19; top: 66px; left: 50%; transform: translateX(-50%); color: var(--amber); font-size: 11px; letter-spacing: .13em; text-transform: uppercase; }
 .duel-turn { position: fixed; z-index: 22; top: 0; left: 50%; transform: translateX(-50%); width: min(660px, calc(100vw - 28px)); min-height: 43px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 18px; padding: 0 15px; color: #828b84; background: rgba(5,7,6,.9); border: 1px solid var(--line); border-top: 2px solid #5f6861; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; backdrop-filter: blur(14px); }
 .duel-turn strong { color: #b8c0ba; font-size: 11px; letter-spacing: .17em; }

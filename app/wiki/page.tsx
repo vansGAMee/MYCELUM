@@ -5,7 +5,7 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { GAME_CONFIG, type SpeciesId } from '../../game/config';
 import styles from './wiki.module.css';
 
-type Category = 'all' | 'protocols' | 'species' | 'mutations' | 'substrate' | 'events';
+type Category = 'all' | 'protocols' | 'species' | 'mutations' | 'substrate' | 'duel' | 'events';
 
 type SpeciesNote = {
   id: SpeciesId;
@@ -34,6 +34,7 @@ const CATEGORY_LABELS: Array<{ id: Category; label: string }> = [
   { id: 'species', label: 'Семейства' },
   { id: 'mutations', label: 'Мутации' },
   { id: 'substrate', label: 'Жизнь субстрата' },
+  { id: 'duel', label: 'Аномалии дуэли' },
   { id: 'events', label: 'События' },
 ];
 
@@ -114,6 +115,14 @@ const mutations = [
     rule: 'В отличие от обычного роста, Паразит создаёт диагональные намерения. Ход всё равно показывается заранее, а смена семейства клетки удаляет свойство.',
     response: 'Защищайте диагональный контакт, находите источник и перекрашивайте шарнир, а не гонитесь за ветвью.',
     warning: 'Он может назвать вас хозяином. Это не повышение.',
+  },
+  {
+    name: 'Гибридный мох',
+    code: 'MUT-HY',
+    thesis: 'Два несовместимых семейства договариваются на языке, которого минуту назад не существовало.',
+    rule: 'В онлайн-дуэли две соседние нейтральные колонии разных семейств могут образовать гибрид. Он наследует поведенческие приоритеты обоих родителей и их свойства: стремительность, броню или диагональный паразитический рост.',
+    response: 'Читайте обе родительские линии. Гибрид не выбирает одну тактику — он смешивает их, пока захват клетки не удалит штамм.',
+    warning: 'Архив назвал его невозможным. Гибрид унаследовал от архива привычку игнорировать возражения.',
   },
 ];
 
@@ -251,6 +260,12 @@ const events = [
   { name: 'Резонанс', duration: '3 хода', rule: 'Следующий крупный квадрат игрока может дать дополнительный заряд Перекраски.', note: 'Несколько ходов геометрия помнит, что когда-то была музыкой.' },
 ];
 
+const duelAnomalies = [
+  { name: 'Споровая бомба', duration: 'Один заряд', rule: 'С вероятностью 22% после полного раунда падает на свободную клетку между Ядрами. Первая колония, захватившая клетку, получает одну гарантированную атаку по укреплённой клетке квадрата. Ядро невосприимчиво.', note: 'Старые кураторы уверяют, что это семя. Молодые кураторы не проверяют утверждение дважды.' },
+  { name: 'Эхо второго хода', duration: 'Шанс 8%', rule: 'После обычного хода субстрат иногда возвращает инициативу той же колонии. Бонусный ход не может породить ещё один бонусный ход подряд.', note: 'Некоторые называют это удачей. Субстрат предпочитает термин «проверка жадности».' },
+  { name: 'Скрещение линий', duration: 'Шанс 14%', rule: 'После полного раунда две соседние нейтральные колонии разных семейств могут стать единым гибридным штаммом и унаследовать поведение обоих родителей.', note: 'Родословная занимает две клетки. Семейные споры — обычно больше.' },
+];
+
 const protocols = [
   { title: 'Читайте до прикосновения', text: 'Наведитесь на фронтир и изучите вероятное семейство. Пустая клетка исследуется, известная враждебная — атакуется. Линии намерений показывают, что случится после вашего хода.' },
   { title: 'Поддержка сильнее храбрости', text: 'Шанс атаки растёт от соседних союзников и падает от защитников. Важны восемь соседей, включая диагонали. Поле показывает итоговый процент до решения.' },
@@ -278,6 +293,7 @@ const searchableText = {
   }),
   mutations: mutations.map((entry) => Object.values(entry).join(' ')),
   substrate: substrateEntries.map((entry) => Object.values(entry).join(' ')),
+  duel: duelAnomalies.map((entry) => Object.values(entry).join(' ')),
   events: events.map((entry) => Object.values(entry).join(' ')),
 };
 
@@ -295,6 +311,7 @@ export default function WikiPage() {
     species: speciesNotes.filter((_, index) => includesQuery(searchableText.species[index], query)),
     mutations: mutations.filter((_, index) => includesQuery(searchableText.mutations[index], query)),
     substrate: substrateEntries.filter((_, index) => includesQuery(searchableText.substrate[index], query)),
+    duel: duelAnomalies.filter((_, index) => includesQuery(searchableText.duel[index], query)),
     events: events.filter((_, index) => includesQuery(searchableText.events[index], query)),
   }), [query]);
 
@@ -497,6 +514,24 @@ export default function WikiPage() {
                       </dl>
                       <blockquote>{entry.warning}</blockquote>
                     </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {shows('duel') && visible.duel.length > 0 && (
+            <section className={styles.section} id="duel">
+              <header className={styles.sectionHead}>
+                <h2>Аномалии онлайн-дуэли</h2>
+                <p>Редкие правила, которыми Субстрат вмешивается только в состязание двух живых колоний.</p>
+              </header>
+              <div className={styles.eventLedger}>
+                {visible.duel.map((entry) => (
+                  <article key={entry.name}>
+                    <header><h3>{entry.name}</h3><span>{entry.duration}</span></header>
+                    <p>{entry.rule}</p>
+                    <small>{entry.note}</small>
                   </article>
                 ))}
               </div>

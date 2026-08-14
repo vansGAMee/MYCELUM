@@ -260,3 +260,48 @@ test('duel world phase creates intents only for neutral families', () => {
   assert.ok(game.activeIntents.length > 0);
   assert.ok(game.activeIntents.every((intent) => intent.sourceSpeciesId !== 'cyan' && intent.sourceSpeciesId !== 'coral'));
 });
+
+test('spore bomb captures one reinforced square cell but cannot damage a Core', () => {
+  const game = new GameEngine('cyan', 25);
+  game.multiplayerMode = true;
+  game.suppressAi = true;
+  game.duelBombCharges = 1;
+  const wall = own(game, 2, 0, 'coral');
+  wall.reinforcement = 3;
+  assert.equal(game.attackCell(2, 0, true), true);
+  assert.equal(wall.currentSpeciesId, 'cyan');
+  assert.equal(game.duelBombCharges, 0);
+  assert.ok(game.animEvents.some((event) => event.type === 'bombExplosion'));
+
+  const protectedCore = own(game, 3, 0, 'coral');
+  protectedCore.reinforcement = 3;
+  protectedCore.isCore = true;
+  game.enemyCoreX = 3;
+  game.enemyCoreY = 0;
+  game.duelBombCharges = 1;
+  assert.equal(game.attackCell(3, 0, true), false);
+  assert.equal(protectedCore.currentSpeciesId, 'coral');
+  assert.equal(game.duelBombCharges, 1);
+});
+
+test('hybrid strain inherits parasite movement from one parent', () => {
+  const game = new GameEngine('cyan', 26);
+  const source = own(game, 5, 5, 'yellow');
+  source.strainId = 'hybrid';
+  game.strains.push({
+    id: 'hybrid',
+    speciesId: 'yellow',
+    name: 'Солнце × Бархат',
+    trait: 'swift',
+    traits: ['swift', 'parasite'],
+    parentSpeciesIds: ['yellow', 'magenta'],
+    colorHex: 0xd98b78,
+    cssHex: '#d98b78',
+  });
+  const intents = SpreadSimulator.generateIntents(game.world, new PRNG(26), game.strains, 8, 'cyan', 1);
+  assert.ok(intents.some((intent) => {
+    const [sx, sy] = intent.sourceCell.split(':').map(Number);
+    const [tx, ty] = intent.targetCell.split(':').map(Number);
+    return Math.abs(tx - sx) === 1 && Math.abs(ty - sy) === 1;
+  }));
+});

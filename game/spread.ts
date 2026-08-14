@@ -48,8 +48,10 @@ export class SpreadSimulator {
       .sort((a, b) => a.x - b.x || a.y - b.y);
     for (const source of sources) {
         if (!source.claimed || !source.revealed || excludedSources.includes(source.currentSpeciesId) || (source.dormantUntilTurn && source.dormantUntilTurn >= turn)) continue;
-        const trait = source.strainId ? strains.find((strain) => strain.id === source.strainId)?.trait : undefined;
-        const directions = trait === 'parasite' ? DIRS8 : DIRS8.filter(([dx, dy]) => dx === 0 || dy === 0);
+        const strain = source.strainId ? strains.find((item) => item.id === source.strainId) : undefined;
+        const traits = strain?.traits ?? (strain ? [strain.trait] : []);
+        const behaviorSpecies = strain?.parentSpeciesIds ?? [source.currentSpeciesId];
+        const directions = traits.includes('parasite') ? DIRS8 : DIRS8.filter(([dx, dy]) => dx === 0 || dy === 0);
         for (const [dx, dy] of directions) {
           const tx = source.x + dx;
           const ty = source.y + dy;
@@ -65,12 +67,15 @@ export class SpreadSimulator {
             const neighbor = world.getExistingCell(source.x + nx, source.y + ny);
             return neighbor?.claimed && neighbor.currentSpeciesId === source.currentSpeciesId;
           }).length;
-          if (source.currentSpeciesId === 'coral') personality += attack ? -14 : 4;
-          if (source.currentSpeciesId === 'yellow') personality += attack ? 4 : -8;
-          if (source.currentSpeciesId === 'cyan') personality -= nearbyFamily * 1.5;
-          if (source.currentSpeciesId === 'magenta') personality += attack ? -8 : -nearbyFamily;
-          if (source.currentSpeciesId === 'violet') personality += attack ? 3 : -nearbyFamily * 2;
-          if (trait === 'swift') personality -= 6;
+          for (const species of behaviorSpecies) {
+            const blend = behaviorSpecies.length > 1 ? 0.65 : 1;
+            if (species === 'coral') personality += (attack ? -14 : 4) * blend;
+            if (species === 'yellow') personality += (attack ? 4 : -8) * blend;
+            if (species === 'cyan') personality -= nearbyFamily * 1.5 * blend;
+            if (species === 'magenta') personality += (attack ? -8 : -nearbyFamily) * blend;
+            if (species === 'violet') personality += (attack ? 3 : -nearbyFamily * 2) * blend;
+          }
+          if (traits.includes('swift')) personality -= 6;
           candidates.push({
             id: `intent:${turn}:${source.x}:${source.y}:${tx}:${ty}`,
             sourceCell: getCellKey(source.x, source.y),
