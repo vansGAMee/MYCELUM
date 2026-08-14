@@ -318,7 +318,10 @@ export class MultiplayerManager {
 
   private async retryWithRelay(attempt: number, turn: ResolvedTurnConfiguration, failedRoom: Room) {
     await this.releaseRoomTransport(failedRoom);
-    if (attempt !== this.transportAttempt) return;
+    // BroadcastChannel can finish a same-device handshake while Trystero is
+    // closing the failed direct room. Do not tear down a connection that won
+    // that race.
+    if (attempt !== this.transportAttempt || this.isConnected) return;
     this.opponentPeerId = null;
     this.engine = null;
     this.isConnected = false;
@@ -327,6 +330,7 @@ export class MultiplayerManager {
     this.syncedKeys.clear();
     try {
       this.openTransportRoom(attempt, turn, 'relay');
+      if (!this.isHost) this.sendHello();
     } catch (error) {
       console.error('[MYCELIUM multiplayer] Relay transport initialization failed', error);
       this.notify('error', 'Не удалось установить соединение даже через TURN. VPN или сеть блокирует WebRTC/TURN.');
@@ -443,8 +447,9 @@ export class MultiplayerManager {
     this.engine.lastResult = { id: `duel:${this.round}:${this.revision}:${title}`, title, detail, tone };
   }
 
-  private collectPickup(role: PlayerRole, x: number, y: number): boolean {
-    if (!this.engine?.duelPickup || this.engine.duelPickup.x !== x || this.engine.duelPickup.y !== y) return false;
+  private collectPickup(role: PlayerRole): boolean {
+    if (!this.engine?.duelPickup) return false;
+    const { x, y } = this.engine.duelPickup;
     const cell = this.engine.world.getExistingCell(x, y);
     const species = role === 'host' ? this.hostSpecies : this.guestSpecies;
     if (!cell?.claimed || cell.currentSpeciesId !== species) return false;
@@ -525,7 +530,7 @@ export class MultiplayerManager {
 
   private finishAcceptedTurn(role: PlayerRole, message: MpActionMessage) {
     if (!this.engine || this.winner || message.type === 'inspect') return;
-    const collectedBomb = this.collectPickup(role, message.x, message.y);
+    const collectedBomb = this.collectPickup(role);
     if (this.grantBonusTurn(role)) {
       this.setDuelResult('Субстрат вернул ход', `${role === 'host' ? 'Хозяин' : 'Гость'} получает редкий второй ход подряд${collectedBomb ? ' и удерживает споровую бомбу' : ''}.`, 'good');
       return;

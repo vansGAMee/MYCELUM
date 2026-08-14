@@ -204,6 +204,34 @@ test('SDP failure closes direct room and performs exactly one relay-only retry',
   manager.leave();
 });
 
+test('a local handshake that finishes during direct cleanup suppresses relay retry', async () => {
+  const leaving = deferred<void>();
+  const callbacks: Array<NonNullable<Parameters<typeof joinRoom>[2]>> = [];
+  let joins = 0;
+  const manager = new MultiplayerManager({
+    joinTransport: ((_config: BaseRoomConfig, _roomId: string, roomCallbacks?: Parameters<typeof joinRoom>[2]) => {
+      callbacks.push(roomCallbacks ?? {});
+      joins++;
+      return mockRoom(() => undefined) as Room & { leave: () => Promise<void> };
+    }) as typeof joinRoom,
+    resolveTurn: async () => ({ mode: 'rtc', iceServers: METERED_ICE_SERVERS }),
+  });
+  manager.hostRoom('LOCAL1', 'cyan');
+  await flushAsyncTransport();
+
+  const room = (manager as unknown as { room: Room }).room;
+  room.leave = () => leaving.promise;
+  callbacks[0].onJoinError?.({ appId: 'mycelium-v3', roomId: 'LOCAL1', peerId: 'peer-1', error: SDP_ERROR });
+  (manager as unknown as { handleLocal: (message: { kind: string; data?: Record<string, unknown> }) => void }).handleLocal({ kind: 'hello', data: { species: 'coral' } });
+  (manager as unknown as { handleLocal: (message: { kind: string }) => void }).handleLocal({ kind: 'ready' });
+  leaving.resolve();
+  await flushAsyncTransport();
+
+  assert.equal(manager.isConnected, true);
+  assert.equal(joins, 1);
+  manager.leave();
+});
+
 test('relay-only ICE list prioritizes TLS TCP 443 and excludes STUN', () => {
   const relay = prioritizeRelayIceServers(METERED_ICE_SERVERS);
   assert.deepEqual(relay.map((server) => server.urls), [
@@ -231,6 +259,34 @@ test('first colony to capture the pickup receives one bomb charge', () => {
   manager.activePlayer = 'host';
 
   assert.equal(manager.performAction(2, 0, 'reveal'), true);
+  assert.equal(game.duelPickup, null);
+  assert.equal(game.duelBombCharges, 1);
+});
+
+test('closing a square also collects a pickup captured by its interior', () => {
+  const manager = new MultiplayerManager();
+  const game = new GameEngine('cyan', 31);
+  game.multiplayerMode = true;
+  game.suppressAi = true;
+  for (let x = 1; x <= 3; x++) for (let y = -1; y <= 1; y++) {
+    if ((x === 2 && y === 0) || (x === 3 && y === 1)) continue;
+    const cell = game.world.getCell(x, y);
+    cell.naturalSpeciesId = 'cyan';
+    cell.currentSpeciesId = 'cyan';
+    cell.claimed = true;
+    cell.revealed = true;
+  }
+  const target = game.world.getCell(3, 1);
+  target.naturalSpeciesId = 'cyan';
+  target.currentSpeciesId = 'cyan';
+  game.duelPickup = { type: 'sporeBomb', x: 2, y: 0, spawnedRound: 1 };
+  manager.engine = game;
+  manager.isHost = true;
+  manager.isConnected = true;
+  manager.activePlayer = 'host';
+
+  assert.equal(manager.performAction(3, 1, 'reveal'), true);
+  assert.equal(game.world.getCell(2, 0).currentSpeciesId, 'cyan');
   assert.equal(game.duelPickup, null);
   assert.equal(game.duelBombCharges, 1);
 });
