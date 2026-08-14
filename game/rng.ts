@@ -31,6 +31,14 @@ export class PRNG {
   pick<T>(arr: T[]): T {
     return arr[Math.floor(this.next() * arr.length)];
   }
+
+  getState(): number {
+    return this.state >>> 0;
+  }
+
+  setState(state: number): void {
+    this.state = state >>> 0;
+  }
 }
 
 /**

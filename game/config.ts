@@ -17,10 +17,10 @@ export const GAME_CONFIG = {
   tileRadius: 3,
   maxParticles: 160,
   eras: [
-    { name: 'ERA I — ORIGIN', startTurn: 1, maxIntents: 1 },
-    { name: 'ERA II — CONTACT', startTurn: 50, maxIntents: 2 },
-    { name: 'ERA III — FRACTURE', startTurn: 100, maxIntents: 3 },
-    { name: 'ERA IV — DEEP WAR', startTurn: 200, maxIntents: 4 },
+    { name: 'ЭРА I — ИСТОК', startTurn: 1, maxIntents: 1 },
+    { name: 'ЭРА II — КОНТАКТ', startTurn: 50, maxIntents: 2 },
+    { name: 'ЭРА III — РАСКОЛ', startTurn: 100, maxIntents: 3 },
+    { name: 'ЭРА IV — ГЛУБОКАЯ ВОЙНА', startTurn: 200, maxIntents: 4 },
   ],
   colors: {
     bg: 0x050706,
@@ -28,11 +28,11 @@ export const GAME_CONFIG = {
     hiddenTileBorder: 0x172019,
     frontier: 0x26332a,
     species: {
-      cyan: { id: 'cyan', name: 'Cyan Spire', title: 'Architect', hex: 0x4ad9d0, cssHex: '#4ad9d0', secondaryHex: 0x91fff6, glowHex: 0x2ca49d, passiveName: 'STRUCTURAL MEMORY', passiveDesc: 'Square-reinforced territory receives an additional defense benefit.' },
-      coral: { id: 'coral', name: 'Coral Bloom', title: 'Predator', hex: 0xff655f, cssHex: '#ff655f', secondaryHex: 0xff918d, glowHex: 0xd64742, passiveName: 'FEAST', passiveDesc: 'The first attack each turn against weak support receives a small bonus.' },
-      yellow: { id: 'yellow', name: 'Sol Flare', title: 'Explorer', hex: 0xf4bd52, cssHex: '#f4bd52', secondaryHex: 0xffd986, glowHex: 0xc38e29, passiveName: 'SENSE', passiveDesc: 'Every third turn, one nearby frontier prediction becomes more precise.' },
-      magenta: { id: 'magenta', name: 'Velvet Pulse', title: 'Parasite', hex: 0xe95a9e, cssHex: '#e95a9e', secondaryHex: 0xff96c7, glowHex: 0xbd3978, passiveName: 'GRAFT', passiveDesc: 'Repainted frontier cells immediately participate in square resolution.' },
-      violet: { id: 'violet', name: 'Void Lotus', title: 'Fortress', hex: 0x9375d8, cssHex: '#9375d8', secondaryHex: 0xbba5ee, glowHex: 0x6749ad, passiveName: 'ROOTED', passiveDesc: 'Territory directly adjacent to the Core counts as reinforced.' },
+      cyan: { id: 'cyan', name: 'Лазурный Шпиль', shortName: 'Шпиль', title: 'Архитектор', hex: 0x4ad9d0, cssHex: '#4ad9d0', secondaryHex: 0x91fff6, glowHex: 0x2ca49d, passiveName: 'СТРУКТУРНАЯ ПАМЯТЬ', passiveDesc: 'Клетки, укреплённые квадратом, получают дополнительную защиту.' },
+      coral: { id: 'coral', name: 'Коралловый Цвет', shortName: 'Коралл', title: 'Хищник', hex: 0xff655f, cssHex: '#ff655f', secondaryHex: 0xff918d, glowHex: 0xd64742, passiveName: 'ПИР', passiveDesc: 'Первая атака за ход по слабо защищённой цели получает небольшой бонус.' },
+      yellow: { id: 'yellow', name: 'Солнечная Вспышка', shortName: 'Солнце', title: 'Исследователь', hex: 0xf4bd52, cssHex: '#f4bd52', secondaryHex: 0xffd986, glowHex: 0xc38e29, passiveName: 'ЧУТЬЁ', passiveDesc: 'Каждый третий ход прогноз одной соседней клетки становится значительно точнее.' },
+      magenta: { id: 'magenta', name: 'Бархатный Пульс', shortName: 'Бархат', title: 'Паразит', hex: 0xe95a9e, cssHex: '#e95a9e', secondaryHex: 0xff96c7, glowHex: 0xbd3978, passiveName: 'ПРИВИВКА', passiveDesc: 'Перекрашенная клетка сразу участвует в замыкании квадратов и получает укрепление.' },
+      violet: { id: 'violet', name: 'Лотос Пустоты', shortName: 'Лотос', title: 'Крепость', hex: 0x9375d8, cssHex: '#9375d8', secondaryHex: 0xbba5ee, glowHex: 0x6749ad, passiveName: 'УКОРЕНЕНИЕ', passiveDesc: 'Клетки рядом с Ядром считаются укреплёнными.' },
     },
   },
 } as const;

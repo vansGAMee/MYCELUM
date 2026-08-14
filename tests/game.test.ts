@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GameEngine } from '../game/engine';
+import { WorldEventManager } from '../game/events';
+import { PRNG } from '../game/rng';
 import { SaveManager } from '../game/save';
+import { SpreadSimulator } from '../game/spread';
 import type { EnemyIntent } from '../game/types';
 
 function own(game: GameEngine, x: number, y: number, species = game.playerSpecies) {
@@ -176,4 +179,84 @@ test('save and load preserve seed, ownership, Core, Repaint, event state, and tu
   assert.equal(loaded.repaintCharges, game.repaintCharges);
   assert.equal(loaded.world.getCell(2, 0).currentSpeciesId, 'cyan');
   assert.equal(loaded.world.getCell(0, 0).isCore, true);
+});
+
+test('save and load preserve the exact gameplay RNG continuation', () => {
+  const game = new GameEngine('coral', 17);
+  game.prng.next();
+  const state = game.prng.getState();
+  const expected = game.prng.next();
+  game.prng.setState(state);
+  game.save();
+  const saved = SaveManager.load();
+  assert.ok(saved);
+  const loaded = GameEngine.loadFromSave(saved);
+  assert.equal(loaded.prng.next(), expected);
+});
+
+test('intent selection is stable regardless of renderer chunk visit order', () => {
+  const make = (reverse: boolean) => {
+    const game = new GameEngine('cyan', 4);
+    for (const [x, y] of reverse ? [[16, 0], [0, 16]] : [[0, 16], [16, 0]]) own(game, x, y, 'coral');
+    return SpreadSimulator.generateIntents(game.world, new PRNG(41), [], 1, 'cyan', 7);
+  };
+  assert.deepEqual(make(false), make(true));
+});
+
+test('seeded world events ignore loaded chunk insertion order', () => {
+  const run = (reverse: boolean) => {
+    const game = new GameEngine('cyan', 2);
+    for (const [x, y] of reverse ? [[16, 0], [0, 16]] : [[0, 16], [16, 0]]) own(game, x, y, 'coral');
+    const { affectedCells } = WorldEventManager.triggerEvent(10, new PRNG(2), game.world, [], 'cyan', 'DENSE_FOG');
+    return affectedCells;
+  };
+  assert.deepEqual(run(false), run(true));
+});
+
+test('Dense Fog cannot be inspected away while Cosmic Snap can', () => {
+  const fog = new GameEngine('cyan', 21);
+  const fogged = own(fog, 2, 0);
+  fogged.isSnapHidden = true;
+  fogged.obscuredUntilTurn = fog.turn + 2;
+  assert.equal(fog.inspectObscuredCell(2, 0), false);
+  fogged.obscuredUntilTurn = undefined;
+  assert.equal(fog.inspectObscuredCell(2, 0), true);
+});
+
+test('enemy Core is attackable but never repaintable', () => {
+  const game = new GameEngine('cyan', 22);
+  const core = own(game, 2, 0, 'coral');
+  core.isCore = true;
+  game.enemyCoreX = 2;
+  game.enemyCoreY = 0;
+  const legal = game.getLegalActions();
+  assert.ok(legal.attacks.includes('2:0'));
+  assert.ok(!legal.repaints.includes('2:0'));
+});
+
+test('enemy squares do not award player combo or square records', () => {
+  const game = new GameEngine('cyan', 23);
+  for (let x = 2; x <= 4; x++) for (let y = -1; y <= 1; y++) if (x === 2 || x === 4 || y === -1 || y === 1) own(game, x, y, 'coral');
+  hide(game, 4, 0, 'cyan');
+  game.activeIntents = [{ id: 'close', sourceCell: '4:-1', sourceSpeciesId: 'coral', targetCell: '4:0', actionType: 'expand', chance: 100, createdTurn: 1 }];
+  hide(game, -2, 0, 'cyan');
+  game.tutorialMode = true;
+  game.tutorialTarget = '-2:0';
+  game.revealCell(-2, 0);
+  assert.equal(game.stats.totalSquaresCaptured, 0);
+  assert.equal(game.stats.maxCombo, 0);
+});
+
+test('duel world phase creates intents only for neutral families', () => {
+  const game = new GameEngine('cyan', 24);
+  game.multiplayerMode = true;
+  game.suppressAi = true;
+  game.enemyCoreX = 12;
+  game.enemyCoreY = 12;
+  for (let x = 11; x <= 13; x++) for (let y = 11; y <= 13; y++) own(game, x, y, 'coral');
+  game.world.getCell(12, 12).isCore = true;
+  own(game, 4, 0, 'yellow');
+  game.resolveDuelRound(1, 'coral');
+  assert.ok(game.activeIntents.length > 0);
+  assert.ok(game.activeIntents.every((intent) => intent.sourceSpeciesId !== 'cyan' && intent.sourceSpeciesId !== 'coral'));
 });

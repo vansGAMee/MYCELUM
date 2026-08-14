@@ -110,23 +110,23 @@ export const EventHistory: React.FC<EventHistoryProps> = ({ logs, onClose }) => 
     <div style={panelStyle}>
       <div style={headerStyle}>
         <h3 style={titleStyle}>
-          CHRONOLOGICAL LOG
+          ХРОНОЛОГИЯ КОЛОНИИ
         </h3>
         <button
           onClick={onClose}
           style={closeBtnStyle}
         >
-          CLOSE
+          ЗАКРЫТЬ
         </button>
       </div>
 
       <div style={listStyle}>
         {logs.length === 0 ? (
-          <div style={emptyStyle}>No events recorded yet.</div>
+          <div style={emptyStyle}>Событий пока не зарегистрировано.</div>
         ) : (
           logs.map((log, idx) => (
             <div key={idx} style={cardStyle}>
-              <div style={turnLabelStyle}>TURN {log.turn}</div>
+              <div style={turnLabelStyle}>ХОД {log.turn}</div>
               <div style={getTextStyle(log.type)}>
                 {log.text}
               </div>

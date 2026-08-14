@@ -8,8 +8,8 @@ import { SaveManager } from '../game/save';
 import type { PixiGameRenderer } from '../render/pixiGame';
 import { EventBanner } from './EventBanner';
 import { GameCanvas } from './GameCanvas';
-import { HUD } from './HUD';
-import { MultiplayerModal } from './MultiplayerModal';
+import { HUD, type DuelHudState } from './HUD';
+import { MultiplayerModal, type MultiplayerLobbyState } from './MultiplayerModal';
 import { RulesModal } from './RulesModal';
 import { StartScreen } from './StartScreen';
 import { StatsModal } from './StatsModal';
@@ -21,6 +21,10 @@ function seedFromText(value: string): number {
   let hash = 2166136261;
   for (const char of value.toUpperCase()) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
   return hash >>> 0;
+}
+
+function seedFromChallenge(value: string): number {
+  return /^[0-9a-z]+$/i.test(value) ? Number.parseInt(value, 36) >>> 0 : seedFromText(value);
 }
 
 function copyText(text: string) {
@@ -35,13 +39,13 @@ function copyText(text: string) {
 }
 
 const TUTORIAL = [
-  ['Your Core', 'Protect the luminous cell at the center. A hostile capture ends the run.'],
-  ['Reveal', 'Hover the frontier east of your colony, read the prediction, then click it.'],
-  ['Attack', 'The Coral cell is exposed. Hover to read support and success chance, then attack.'],
-  ['Build a square', 'One perimeter cell remains. Reveal the highlighted frontier to close the 3×3.'],
-  ['Repaint', 'Press Repaint below, then take the Coral cell with certainty.'],
-  ['Read the intent', 'A Coral source now threatens your Core. Capture the source before its tendril resolves.'],
-  ['The colony is yours', 'Reveal. Attack. Build squares. Read intents. Protect the Core.'],
+  ['Ваше Ядро', 'Защищайте светящуюся клетку в центре. Захват Ядра завершает партию.'],
+  ['Разведка', 'Наведитесь на фронтир к востоку от колонии, прочтите прогноз и откройте клетку.'],
+  ['Атака', 'Коралловая клетка раскрыта. Проверьте поддержку и шанс успеха, затем атакуйте.'],
+  ['Замкните квадрат', 'На периметре осталась одна клетка. Откройте подсвеченный фронтир и завершите квадрат 3×3.'],
+  ['Перекраска', 'Включите Перекраску и гарантированно захватите Коралловую клетку.'],
+  ['Читайте намерение', 'Коралловый источник угрожает Ядру. Захватите источник до разрешения отростка.'],
+  ['Колония ваша', 'Исследуйте. Атакуйте. Замыкайте квадраты. Читайте намерения. Берегите Ядро.'],
 ] as const;
 
 export function Game() {
@@ -52,9 +56,12 @@ export function Game() {
   const [showStats, setShowStats] = useState(false);
   const [showMultiplayer, setShowMultiplayer] = useState(false);
   const [mpStatus, setMpStatus] = useState<string | null>(null);
+  const [mpLobby, setMpLobby] = useState<MultiplayerLobbyState>({ phase: 'idle' });
+  const [mpDisconnected, setMpDisconnected] = useState(false);
   const [hover, setHover] = useState<HoverDetail | null>(null);
   const [tutorialStep, setTutorialStep] = useState<number | null>(null);
   const [copied, setCopied] = useState('');
+  const [suppressLoadedEvent, setSuppressLoadedEvent] = useState(false);
   const rendererRef = useRef<PixiGameRenderer | null>(null);
   const mpRef = useRef<MultiplayerManager | null>(null);
   const tutorialStepRef = useRef<number | null>(null);
@@ -129,6 +136,7 @@ export function Game() {
   useEffect(() => {
     if (!engine) return;
     const unsubscribe = engine.subscribe(() => {
+      setSuppressLoadedEvent(false);
       forceUpdate((value) => value + 1);
       advanceTutorial(engine);
     });
@@ -142,7 +150,8 @@ export function Game() {
   const startGame = useCallback((species: SpeciesId, seed?: number) => {
     SaveManager.clearSave();
     const challenge = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('seed') : null;
-    const next = new GameEngine(species, seed ?? (challenge ? seedFromText(challenge) : undefined));
+    const next = new GameEngine(species, seed ?? (challenge ? seedFromChallenge(challenge) : undefined));
+    setSuppressLoadedEvent(false);
     setTutorial(null);
     setEngine(next);
     setIsPlaying(true);
@@ -152,6 +161,7 @@ export function Game() {
   const continueGame = useCallback(() => {
     const save = SaveManager.load();
     if (!save) return;
+    setSuppressLoadedEvent(true);
     setEngine(GameEngine.loadFromSave(save));
     setIsPlaying(true);
   }, []);
@@ -160,6 +170,7 @@ export function Game() {
     const date = new Date().toISOString().slice(0, 10);
     SaveManager.clearSave();
     const next = new GameEngine(species, seedFromText(`MYCELIUM:${date}`));
+    setSuppressLoadedEvent(false);
     next.dailyKey = date;
     setTutorial(null);
     setEngine(next);
@@ -168,6 +179,7 @@ export function Game() {
 
   const startTutorial = useCallback(() => {
     const game = new GameEngine('cyan', seedFromText('MYCELIUM:TUTORIAL'));
+    setSuppressLoadedEvent(false);
     game.tutorialMode = true;
     const reveal = game.world.getCell(2, 0);
     reveal.naturalSpeciesId = 'cyan';
@@ -184,19 +196,41 @@ export function Game() {
   }, []);
 
   const connectMultiplayer = useCallback((host: boolean, code: string, species: SpeciesId) => {
+    mpRef.current?.leave();
     const manager = new MultiplayerManager();
     mpRef.current = manager;
-    manager.subscribe((event) => {
+    setMpDisconnected(false);
+    setMpStatus(null);
+    setMpLobby({ phase: 'waiting', role: host ? 'host' : 'guest', roomCode: code });
+    manager.subscribe((event, data) => {
+      if (event === 'waiting') setMpLobby({ phase: 'waiting', role: host ? 'host' : 'guest', roomCode: code });
       if ((event === 'connected' || event === 'sync') && manager.engine) {
         setEngine(manager.engine);
         setIsPlaying(true);
         setShowMultiplayer(false);
-        setMpStatus(host ? 'Host · connected' : 'Guest · connected');
+        setMpLobby({ phase: 'idle' });
+        if (event === 'connected') {
+          setMpStatus(manager.connectionNote ?? null);
+          if (manager.connectionNote) window.setTimeout(() => setMpStatus(null), 5200);
+        }
+        forceUpdate((value) => value + 1);
       }
-      if (event === 'disconnected') setMpStatus('Opponent disconnected');
-      if (event === 'error') setMpStatus('Connection failed · retry with a new room');
+      if (event === 'rejected') forceUpdate((value) => value + 1);
+      if (event === 'disconnected') { setMpDisconnected(true); setMpStatus('Соперник отключился · дуэль приостановлена'); }
+      if (event === 'error') {
+        const message = typeof data === 'string' ? data : 'Не удалось установить прямое соединение.';
+        setMpLobby({ phase: 'error', role: host ? 'host' : 'guest', roomCode: code, message });
+        setMpStatus(`Проблема соединения · ${message}`);
+      }
     });
     if (host) manager.hostRoom(code, species); else manager.joinRoom(code, species);
+  }, []);
+
+  const closeMultiplayer = useCallback(() => {
+    mpRef.current?.leave();
+    mpRef.current = null;
+    setMpLobby({ phase: 'idle' });
+    setShowMultiplayer(false);
   }, []);
 
   const exitToMenu = () => {
@@ -206,6 +240,8 @@ export function Game() {
     setIsPlaying(false);
     setTutorial(null);
     setMpStatus(null);
+    setMpDisconnected(false);
+    setMpLobby({ phase: 'idle' });
     setHasSave(SaveManager.hasSave());
   };
 
@@ -216,26 +252,40 @@ export function Game() {
 
   if (!isPlaying || !engine) {
     return <>
-      <StartScreen hasSave={hasSave} onStartNewGame={startGame} onContinueGame={continueGame} onOpenMultiplayer={() => setShowMultiplayer(true)} onOpenRules={() => setShowRules(true)} onStartTutorial={startTutorial} onStartDaily={startDaily} />
+      <StartScreen hasSave={hasSave} onStartNewGame={startGame} onContinueGame={continueGame} onOpenMultiplayer={() => { setMpLobby({ phase: 'idle' }); setShowMultiplayer(true); }} onOpenRules={() => setShowRules(true)} onStartTutorial={startTutorial} onStartDaily={startDaily} />
       {showRules && <RulesModal onClose={() => setShowRules(false)} />}
-      {showMultiplayer && <MultiplayerModal onHost={(code, species) => connectMultiplayer(true, code, species)} onJoin={(code, species) => connectMultiplayer(false, code, species)} onClose={() => setShowMultiplayer(false)} />}
+      {showMultiplayer && <MultiplayerModal lobby={mpLobby} onHost={(code, species) => connectMultiplayer(true, code, species)} onJoin={(code, species) => connectMultiplayer(false, code, species)} onClose={closeMultiplayer} />}
     </>;
   }
 
-  const result = `MYCELIUM\nTurn ${engine.turn}\nTerritory ${engine.stats.playerTerritory}\nLargest Square ${engine.stats.largestSquareSize || '—'}\nCombo ×${engine.stats.maxCombo}\nSeed ${engine.seed.toString(36).toUpperCase()}`;
+  const result = `MYCELIUM\nХод ${engine.turn}\nТерритория ${engine.stats.playerTerritory}\nКрупнейший квадрат ${engine.stats.largestSquareSize || '—'}\nЦепочка ×${engine.stats.maxCombo}\nКод мира ${engine.seed.toString(36).toUpperCase()}`;
   const challengeLink = `${window.location.origin}${window.location.pathname}?seed=${engine.seed.toString(36).toUpperCase()}`;
   const tooltipStyle = hover ? { left: Math.min(window.innerWidth - 250, hover.x + 16), top: Math.min(window.innerHeight - 140, hover.y + 16) } : undefined;
+  const manager = mpRef.current?.engine === engine ? mpRef.current : null;
+  const duel: DuelHudState | undefined = manager ? {
+    role: manager.getRole(),
+    round: manager.round,
+    isMyTurn: manager.isMyTurn(),
+    pending: manager.pendingAction,
+    roomCode: manager.roomCode,
+    opponentSpecies: manager.isHost ? manager.guestSpecies : manager.hostSpecies,
+    disconnected: mpDisconnected,
+  } : undefined;
+  const actionFeedback = engine.lastResult ?? (manager?.lastMove
+    ? { id: manager.lastMove.id, title: manager.lastMove.title, detail: manager.lastMove.detail, tone: manager.lastMove.accepted ? 'good' as const : 'bad' as const }
+    : null);
 
   return <main className="game-root grain">
     <GameCanvas engine={engine} onRendererReady={(renderer) => { rendererRef.current = renderer; }} onOnlineAction={mpRef.current ? performOnlineAction : undefined} />
-    {!engine.gameOver && !engine.gameWon && <HUD engine={engine} onOpenRules={() => setShowRules(true)} onOpenStats={() => setShowStats(true)} onCenterCore={() => rendererRef.current?.camera.centerOnTile(engine.coreX, engine.coreY)} onExit={exitToMenu} />}
-    {mpStatus && <div className="event-warning" style={{ top: 88 }}>{mpStatus}</div>}
+    {!engine.gameOver && !engine.gameWon && <HUD engine={engine} duel={duel} onOpenRules={() => setShowRules(true)} onOpenStats={() => setShowStats(true)} onCenterCore={() => rendererRef.current?.camera.centerOnTile(engine.coreX, engine.coreY)} onExit={exitToMenu} />}
+    {mpStatus && <div className={`connection-alert ${mpDisconnected ? 'error' : 'note'}`} role="status">{mpStatus}</div>}
+    {actionFeedback && !engine.gameOver && !engine.gameWon && <aside key={actionFeedback.id} className={`action-result ${actionFeedback.tone}`} aria-live="polite"><small>ПОСЛЕДНИЙ ИСХОД</small><strong>{actionFeedback.title}</strong><p>{actionFeedback.detail}</p></aside>}
     {hover && <div className="cell-tooltip" style={tooltipStyle}><strong>{hover.title}</strong>{hover.lines.map((line) => <span key={line}>{line}</span>)}</div>}
-    <EventBanner event={engine.lastEvent} />
+    <EventBanner event={engine.lastEvent} suppressed={suppressLoadedEvent} />
     {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     {showStats && <StatsModal stats={engine.stats} seed={engine.seed} onClose={() => setShowStats(false)} />}
-    {tutorialStep !== null && !engine.gameOver && !engine.gameWon && <aside className="tutorial-card"><small>Lesson {tutorialStep + 1} / {TUTORIAL.length}</small><h3>{TUTORIAL[tutorialStep][0]}</h3><p>{TUTORIAL[tutorialStep][1]}</p>{tutorialStep === 0 && <button className="solid-button" onClick={() => { engine.tutorialTarget = '2:0'; setTutorial(1); engine.refresh(); }}>Begin</button>}{tutorialStep === 6 && <button className="solid-button" onClick={() => { engine.tutorialMode = false; exitToMenu(); }}>Finish</button>}</aside>}
-    {engine.gameWon && <div className="modal-backdrop"><section className="modal run-end"><h2>Opponent Core captured.</h2><p>The substrate belongs to your colony.</p><div className="stats-line"><div className="stat"><small>Turns</small><b>{engine.turn}</b></div><div className="stat"><small>Territory</small><b>{engine.stats.playerTerritory}</b></div></div><div className="button-row"><button className="solid-button" onClick={exitToMenu}>Main menu</button></div></section></div>}
-    {engine.gameOver && <div className="modal-backdrop"><section className="modal run-end"><h2>The Core has fallen.</h2><p>The colony ends, but the same substrate can be challenged again.</p><div className="stats-line"><div className="stat"><small>Turns</small><b>{engine.turn}</b></div><div className="stat"><small>Peak territory</small><b>{engine.stats.maxPlayerTerritory}</b></div><div className="stat"><small>Largest square</small><b>{engine.stats.largestSquareSize ? `${engine.stats.largestSquareSize}×${engine.stats.largestSquareSize}` : '—'}</b></div><div className="stat"><small>Longest chain</small><b>×{engine.stats.maxCombo}</b></div></div><div className="button-row"><button className="solid-button" onClick={exitToMenu}>New world</button><button className="quiet-button" onClick={() => { copyText(result); setCopied('Result copied'); }}>Copy result</button><button className="quiet-button" onClick={() => { copyText(challengeLink); setCopied('Link copied'); }}>Challenge link</button></div>{copied && <p>{copied}</p>}</section></div>}
+    {tutorialStep !== null && !engine.gameOver && !engine.gameWon && <aside className="tutorial-card"><small>Урок {tutorialStep + 1} / {TUTORIAL.length}</small><h3>{TUTORIAL[tutorialStep][0]}</h3><p>{TUTORIAL[tutorialStep][1]}</p>{tutorialStep === 0 && <button className="solid-button" onClick={() => { engine.tutorialTarget = '2:0'; setTutorial(1); engine.refresh(); }}>Начать</button>}{tutorialStep === 6 && <button className="solid-button" onClick={() => { engine.tutorialMode = false; exitToMenu(); }}>Завершить</button>}</aside>}
+    {engine.gameWon && <div className="modal-backdrop"><section className="modal run-end"><h2>Ядро соперника захвачено.</h2><p>Теперь субстрат принадлежит вашей колонии.</p><div className="stats-line"><div className="stat"><small>Ходов</small><b>{engine.turn}</b></div><div className="stat"><small>Территория</small><b>{engine.stats.playerTerritory}</b></div></div><div className="button-row"><button className="solid-button" onClick={exitToMenu}>Главное меню</button></div></section></div>}
+    {engine.gameOver && <div className="modal-backdrop"><section className="modal run-end"><h2>Ядро пало.</h2><p>Колония погибла, но тот же субстрат можно исследовать снова.</p><div className="stats-line"><div className="stat"><small>Ходов</small><b>{engine.turn}</b></div><div className="stat"><small>Пик территории</small><b>{engine.stats.maxPlayerTerritory}</b></div><div className="stat"><small>Крупнейший квадрат</small><b>{engine.stats.largestSquareSize ? `${engine.stats.largestSquareSize}×${engine.stats.largestSquareSize}` : '—'}</b></div><div className="stat"><small>Лучшая цепочка</small><b>×{engine.stats.maxCombo}</b></div></div><div className="button-row"><button className="solid-button" onClick={exitToMenu}>Новый мир</button><button className="quiet-button" onClick={() => { copyText(result); setCopied('Результат скопирован'); }}>Скопировать результат</button><button className="quiet-button" onClick={() => { copyText(challengeLink); setCopied('Ссылка скопирована'); }}>Ссылка-вызов</button></div>{copied && <p>{copied}</p>}</section></div>}
   </main>;
 }

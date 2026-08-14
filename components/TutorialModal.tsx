@@ -44,7 +44,7 @@ export const TutorialModal: React.FC<TutorialModalProps> = ({ onClose }) => {
         {step === 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 900, color: '#fff', margin: 0 }}>
-              1. ИССЛЕДОВАНИЕ ФРОНТИРА (FRONTIER)
+              1. ИССЛЕДОВАНИЕ ФРОНТИРА
             </h3>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
               Ваше <b>Ядро (◉)</b> — ваша жизнь. Каждым ходом открывайте темные клетки, непосредственно примыкающие к вашей территории:
@@ -62,16 +62,16 @@ export const TutorialModal: React.FC<TutorialModalProps> = ({ onClose }) => {
         {step === 2 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 900, color: '#22d3ee', margin: 0 }}>
-              2. ПРЕДСКАЗАНИЕ КЛЕТОК (PROBABILITY)
+              2. ПРОГНОЗ КЛЕТОК
             </h3>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
               Клетки не случайны! При наведении курсора система показывает биологическое давление и прогноз:
             </p>
             <div style={codeBox}>{`[ПРОГНОЗ КЛЕТКИ]
-LIKELY: CYAN (74%)
-CONFIDENCE: HIGH`}</div>
+ВЕРОЯТНЕЕ ВСЕГО: ЛАЗУРНЫЙ (74%)
+УВЕРЕННОСТЬ: ВЫСОКАЯ`}</div>
             <p style={{ fontSize: '0.75rem', color: '#34d399' }}>
-              Выбирайте клетки с высокой вероятностью вашего цвета для построения фининсовых заслонов!
+              Выбирайте клетки с высокой вероятностью вашего семейства и готовьте периметры квадратов.
             </p>
           </div>
         )}
@@ -79,17 +79,17 @@ CONFIDENCE: HIGH`}</div>
         {step === 3 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 900, color: '#34d399', margin: 0 }}>
-              3. ЗАХВАТ КВАДРАТОМ (SQUARE FILL)
+              3. ЗАХВАТ КВАДРАТОМ
             </h3>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
-              Замкните рамку $3 \times 3$ или $4 \times 4$ одного цвета. Вся внутренняя область закрасится и забронируется:
+              Замкните рамку 3×3 или 4×4 одного цвета. Вся внутренняя область будет захвачена и укреплена:
             </p>
             <div style={codeBox}>{`[ДО ЗАХВАТА]             [ПОСЛЕ ЗАХВАТА]
 🩵 🩵 🩵 🩵              🩵 🩵 🩵 🩵
 🩵 ⬛ ⬛ 🩵   -ЗАХВАТ!-> 🩵 🩵 🩵 🩵
 🩵 🩵 🩵 🩵              🩵 🩵 🩵 🩵`}</div>
             <p style={{ fontSize: '0.75rem', color: '#34d399' }}>
-              Захват $4 \times 4$+ даёт +1 Заряд Перекраски `REPAINT [R]`!
+              Квадрат 4×4 или крупнее возвращает один заряд Перекраски [R].
             </p>
           </div>
         )}
@@ -97,7 +97,7 @@ CONFIDENCE: HIGH`}</div>
         {step === 4 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 900, color: '#ff4444', margin: 0 }}>
-              4. АНОНС НАМЕРЕНИЙ ВРАГА (ENEMY INTENT)
+              4. НАМЕРЕНИЯ ВРАГА
             </h3>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
               Враги анонсируют свои ходы ЗАРАНЕЕ перед вашим кликом! Направление атаки отображается цветными стрелками:
@@ -110,10 +110,10 @@ CONFIDENCE: HIGH`}</div>
         {step === 5 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 900, color: '#6ee7b7', margin: 0 }}>
-              5. ПЕРЕКРАСКА (`REPAINT [R]`)
+              5. ПЕРЕКРАСКА [R]
             </h3>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
-              Используйте клавишу `R` или кнопку `REPAINT (2/3)`, чтобы перекрасить под угрозой находящуюся пограничную клетку врага.
+              Используйте клавишу R или кнопку «Перекраска», чтобы гарантированно захватить соседнюю пограничную клетку врага.
             </p>
           </div>
         )}
@@ -126,7 +126,7 @@ CONFIDENCE: HIGH`}</div>
             <p style={{ fontSize: '0.8rem', color: '#ccc', lineHeight: 1.5 }}>
               Если вражеский мицелий захватит клетку вашего <b>Ядра (◉)</b> — раунд немедленно завершается поражением!
             </p>
-            <div style={{ ...codeBox, color: '#ff4444' }}>{`⚠️ CORE IN DANGER
+            <div style={{ ...codeBox, color: '#ff4444' }}>{`⚠️ ЯДРО В ОПАСНОСТИ
 (Защищайте клетку Ядра от вражеских атак!)`}</div>
           </div>
         )}

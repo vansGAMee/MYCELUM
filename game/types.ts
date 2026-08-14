@@ -17,6 +17,7 @@ export interface Cell {
   isSnapHidden?: boolean;
   obscuredUntilTurn?: number;
   blockedUntilTurn?: number;
+  dormantUntilTurn?: number;
 }
 
 export type SecondaryTrait = 'swift' | 'armored' | 'parasite';
@@ -56,6 +57,13 @@ export interface LegalActions {
   reveals: CellKey[];
   attacks: CellKey[];
   repaints: CellKey[];
+}
+
+export interface ActionResult {
+  id: string;
+  title: string;
+  detail: string;
+  tone: 'good' | 'bad' | 'neutral' | 'warning';
 }
 
 export interface SquareMatch {
@@ -131,11 +139,13 @@ export interface SavedCell {
   isSnapHidden?: boolean;
   obscuredUntilTurn?: number;
   blockedUntilTurn?: number;
+  dormantUntilTurn?: number;
 }
 
 export interface SaveData {
   version: number;
   seed: number;
+  rngState: number;
   turn: number;
   playerSpecies: SpeciesId;
   repaintCharges: number;

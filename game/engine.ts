@@ -7,6 +7,7 @@ import { SpreadSimulator } from './spread';
 import { SquareDetector } from './squares';
 import type {
   AttackPreview,
+  ActionResult,
   CellKey,
   EnemyIntent,
   EventLogEntry,
@@ -81,6 +82,9 @@ export class GameEngine {
   public lastAction: 'reveal' | 'attack' | 'repaint' | null = null;
   public suppressAi = false;
   public dailyKey: string | undefined;
+  public multiplayerMode = false;
+  public lastResult: ActionResult | null = null;
+  private resultSequence = 0;
 
   private listeners = new Set<EngineCallback>();
 
@@ -94,7 +98,7 @@ export class GameEngine {
       this.world.getCell(0, 0).reinforcement = 3;
     }
     this.updateStats();
-    this.addLog('A new colony wakes in the Black Substrate.', 'system');
+    this.addLog('Новая колония пробуждается в Чёрном Субстрате.', 'system');
   }
 
   public subscribe(callback: EngineCallback): () => void {
@@ -106,9 +110,9 @@ export class GameEngine {
     for (const listener of this.listeners) listener();
   }
 
-  public refresh() {
+  public refresh(validateIntents = true) {
     this.updateStats();
-    this.validateAndCleanIntents();
+    if (validateIntents) this.validateAndCleanIntents();
     this.notify();
   }
 
@@ -117,9 +121,13 @@ export class GameEngine {
     this.eventLogs = this.eventLogs.slice(0, 40);
   }
 
+  private setResult(title: string, detail: string, tone: ActionResult['tone']) {
+    this.lastResult = { id: `${this.turn}:${++this.resultSequence}`, title, detail, tone };
+  }
+
   public getSpeciesPrediction(x: number, y: number): SpeciesPrediction {
     const prediction = this.world.getSpeciesPrediction(x, y);
-    if (this.playerSpecies === 'yellow' && this.turn % 3 === 0) {
+    if (this.playerSpecies === 'yellow' && this.turn % 3 === 0 && this.getSenseTargetKey() === getCellKey(x, y)) {
       const actual = this.world.getCell(x, y).naturalSpeciesId;
       const others = (Object.keys(prediction.probabilities) as SpeciesId[]).filter((id) => id !== actual);
       prediction.probabilities[actual] = 85;
@@ -133,6 +141,27 @@ export class GameEngine {
       prediction.confidencePercent = 85;
     }
     return prediction;
+  }
+
+  public getSenseTargetKey(): CellKey | null {
+    if (this.playerSpecies !== 'yellow' || this.turn % 3 !== 0) return null;
+    const frontier = new Set<CellKey>();
+    for (const chunk of this.world.getLoadedChunks()) {
+      for (const cell of chunk.cells.values()) {
+        if (!cell.claimed || cell.currentSpeciesId !== this.playerSpecies) continue;
+        for (const [dx, dy] of DIRS8) {
+          const neighbor = this.world.getCell(cell.x + dx, cell.y + dy);
+          if (!neighbor.claimed && !neighbor.revealed) frontier.add(getCellKey(neighbor.x, neighbor.y));
+        }
+      }
+    }
+    const ordered = [...frontier].sort((a, b) => {
+      const [ax, ay] = parseCellKey(a); const [bx, by] = parseCellKey(b);
+      return ax - bx || ay - by;
+    });
+    if (!ordered.length) return null;
+    const mixed = (this.seed ^ Math.imul(this.turn, 0x9e3779b1)) >>> 0;
+    return ordered[mixed % ordered.length];
   }
 
   public isAdjacentToPlayerTerritory(x: number, y: number): boolean {
@@ -159,7 +188,8 @@ export class GameEngine {
     let chance = GAME_CONFIG.attackBaseChance
       + Math.max(0, attackerSupport - 1) * GAME_CONFIG.attackAllySupportBonus
       - Math.max(0, defenderSupport - 1) * GAME_CONFIG.attackDefenderSupportPenalty;
-    if (target.reinforcement > 1) chance -= 0.15;
+    if (target.reinforcement > 2) chance -= 0.25;
+    else if (target.reinforcement > 1) chance -= 0.15;
     if (target.strainId && this.strains.find((strain) => strain.id === target.strainId)?.trait === 'armored') chance -= 0.1;
     if (this.playerSpecies === 'coral' && defenderSupport <= 1) chance += 0.1;
     chance = Math.max(GAME_CONFIG.attackMinChance, Math.min(GAME_CONFIG.attackMaxChance, chance));
@@ -195,17 +225,20 @@ export class GameEngine {
       return;
     }
     const eventActive = this.lastEvent && this.lastEvent.expiresTurn >= this.turn ? this.lastEvent : null;
-    let maxIntents: number = this.getCurrentEra().maxIntents;
-    if (eventActive?.type === 'BLOOM_TIDE') maxIntents++;
-    if (eventActive?.type === 'DROUGHT') maxIntents = Math.max(0, maxIntents - 1);
+    const maxIntents: number = this.getCurrentEra().maxIntents;
     this.activeIntents = SpreadSimulator.generateIntents(
       this.world,
       this.prng,
+      this.strains,
       maxIntents,
       this.playerSpecies,
       this.turn,
       this.coreX,
       this.coreY,
+      {
+        bonusSpecies: eventActive?.type === 'BLOOM_TIDE' ? eventActive.targetSpeciesId : undefined,
+        drought: eventActive?.type === 'DROUGHT',
+      },
     );
     this.validateAndCleanIntents();
   }
@@ -216,11 +249,19 @@ export class GameEngine {
     this.isCoreInDanger = this.activeIntents.some((intent) => intent.targetCell === coreKey);
   }
 
+  public validateDuelIntents(opponentSpecies: SpeciesId) {
+    this.activeIntents = SpreadSimulator.validateIntents(this.activeIntents, this.world, this.playerSpecies, this.turn, [this.playerSpecies, opponentSpecies]);
+    this.isCoreInDanger = this.activeIntents.some((intent) => intent.targetCell === getCellKey(this.coreX, this.coreY));
+  }
+
   public inspectObscuredCell(x: number, y: number): boolean {
     const cell = this.world.getExistingCell(x, y);
     if (!cell?.claimed || !cell.isSnapHidden) return false;
+    // Dense Fog is a timed tactical effect. Only Cosmic Snap memories can be
+    // restored with a free inspection.
+    if (cell.obscuredUntilTurn && cell.obscuredUntilTurn >= this.turn) return false;
     cell.isSnapHidden = false;
-    cell.obscuredUntilTurn = undefined;
+    this.setResult('Память восстановлена', 'Космический щелчок скрыл восприятие, но не владение. Осмотр не потратил ход.', 'neutral');
     this.notify();
     return true;
   }
@@ -240,7 +281,12 @@ export class GameEngine {
     cell.currentSpeciesId = cell.naturalSpeciesId;
     this.animEvents = [{ type: 'reveal', x, y, species: cell.currentSpeciesId, isPlayer }];
     this.lastAction = 'reveal';
-    this.addLog(isPlayer ? 'The frontier joins your colony.' : `${GAME_CONFIG.colors.species[cell.currentSpeciesId].name} discovered.`, 'reveal');
+    this.addLog(isPlayer ? 'Фронтир присоединился к вашей колонии.' : `Обнаружено семейство: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name}.`, 'reveal');
+    this.setResult(
+      isPlayer ? 'Колония помнит вас' : `Раскрыто: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name}`,
+      isPlayer ? 'Территория +1. Новая клетка поддерживает атаки и замыкает квадраты.' : 'Враждебный рост пробудился. Его важное движение будет показано заранее.',
+      isPlayer ? 'good' : 'warning',
+    );
     this.processTurn([getCellKey(x, y)]);
     return true;
   }
@@ -259,16 +305,18 @@ export class GameEngine {
       cell.claimed = true;
       cell.revealed = true;
       cell.strainId = undefined;
-      cell.reinforcement = 1;
+      cell.reinforcement = this.playerSpecies === 'violet' && Math.max(Math.abs(x - this.coreX), Math.abs(y - this.coreY)) === 1 ? 2 : 1;
       cell.lastChangedTurn = this.turn;
       this.stats.enemiesCaptured++;
       this.animEvents.push({ type: 'attackSuccess', x, y, species: this.playerSpecies });
       if (cell.isCore && x === this.enemyCoreX && y === this.enemyCoreY) this.gameWon = true;
-      this.addLog(`Attack succeeded · ${preview.chance}%`, 'attack');
+      this.addLog(`Атака успешна · ${preview.chance}%`, 'attack');
+      this.setResult('Атака закрепилась', `${preview.chance}% · поддержка союзников: ${preview.attackerSupport}, защитников: ${preview.defenderSupport}.`, 'good');
       this.processTurn([getCellKey(x, y)]);
     } else {
       this.animEvents.push({ type: 'attackFailure', x, y });
-      this.addLog(`Attack failed · ${preview.chance}%`, 'attack');
+      this.addLog(`Атака провалилась · ${preview.chance}%`, 'attack');
+      this.setResult('Цель устояла', `${preview.chance}% · ход потрачен, расположение поддержки не изменилось.`, 'bad');
       this.processTurn([]);
     }
     return true;
@@ -282,14 +330,15 @@ export class GameEngine {
     if (!this.isAdjacentToPlayerTerritory(x, y)) return false;
     cell.currentSpeciesId = this.playerSpecies;
     cell.strainId = undefined;
-    cell.reinforcement = 1;
+    cell.reinforcement = this.playerSpecies === 'magenta' || (this.playerSpecies === 'violet' && Math.max(Math.abs(x - this.coreX), Math.abs(y - this.coreY)) === 1) ? 2 : 1;
     cell.lastChangedTurn = this.turn;
     this.repaintCharges--;
     this.lastAction = 'repaint';
     this.isRepaintMode = false;
     this.stats.enemiesCaptured++;
     this.animEvents = [{ type: 'attackSuccess', x, y, species: this.playerSpecies }];
-    this.addLog(`Repaint guaranteed capture · ${this.repaintCharges}/3`, 'repaint');
+    this.addLog(`Гарантированный захват Перекраской · ${this.repaintCharges}/3`, 'repaint');
+    this.setResult('Перекраска прижилась', `Гарантированный захват · осталось зарядов: ${this.repaintCharges}/3.`, 'good');
     this.processTurn([getCellKey(x, y)]);
     return true;
   }
@@ -312,9 +361,10 @@ export class GameEngine {
           const neighbor = this.world.getCell(cell.x + dx, cell.y + dy);
           const key = getCellKey(neighbor.x, neighbor.y);
           if (!neighbor.claimed && (!neighbor.blockedUntilTurn || neighbor.blockedUntilTurn < this.turn)) reveals.add(key);
-          if (neighbor.claimed && neighbor.revealed && !neighbor.isSnapHidden && neighbor.currentSpeciesId !== this.playerSpecies && !neighbor.isCore) {
+          const enemyCore = neighbor.isCore && neighbor.x === this.enemyCoreX && neighbor.y === this.enemyCoreY;
+          if (neighbor.claimed && neighbor.revealed && !neighbor.isSnapHidden && neighbor.currentSpeciesId !== this.playerSpecies && (!neighbor.isCore || enemyCore)) {
             attacks.add(key);
-            if (this.repaintCharges > 0) repaints.add(key);
+            if (this.repaintCharges > 0 && !neighbor.isCore) repaints.add(key);
           }
         }
       }
@@ -356,7 +406,8 @@ export class GameEngine {
           return !!blocked && blocked >= this.turn;
         })) continue;
         processed.add(id);
-        this.currentCombo++;
+        const isPlayerSquare = match.speciesId === this.playerSpecies;
+        if (isPlayerSquare) this.currentCombo++;
         this.lastSquaresMatched.push(match);
         this.animEvents.push({ type: 'squareFill', match });
         for (const key of match.interiorCells) {
@@ -374,11 +425,14 @@ export class GameEngine {
             changed.push(key);
           }
         }
-        this.stats.totalSquaresCaptured++;
-        this.stats.largestSquareSize = Math.max(this.stats.largestSquareSize, match.size);
-        if (match.speciesId === this.playerSpecies && match.size >= 4) {
+        if (isPlayerSquare) {
+          this.stats.totalSquaresCaptured++;
+          this.stats.largestSquareSize = Math.max(this.stats.largestSquareSize, match.size);
+        }
+        if (isPlayerSquare && match.size >= 4) {
           const resonance = this.lastEvent?.type === 'RESONANCE' && this.lastEvent.expiresTurn >= this.turn;
           this.repaintCharges = Math.min(GAME_CONFIG.maxRepaints, this.repaintCharges + (resonance ? 2 : 1));
+          if (resonance && this.lastEvent) this.lastEvent.expiresTurn = this.turn - 1;
         }
       }
       queue = [...new Set(queue)].sort();
@@ -386,31 +440,81 @@ export class GameEngine {
     return changed;
   }
 
+  private checkTerminalState() {
+    if (this.gameOver || this.gameWon) return;
+    const core = this.world.getCell(this.coreX, this.coreY);
+    if (core.currentSpeciesId !== this.playerSpecies) {
+      this.gameOver = true;
+      this.gameWon = false;
+      this.isCoreInDanger = false;
+      this.animEvents.push({ type: 'gameOver' });
+      this.addLog('Ваше Ядро захвачено.', 'death');
+      this.setResult('Ядро захвачено', 'Враждебная колония добралась до единственной клетки, способной завершить партию.', 'bad');
+    }
+    if (this.enemyCoreX !== null && this.enemyCoreY !== null) {
+      const enemyCore = this.world.getCell(this.enemyCoreX, this.enemyCoreY);
+      if (enemyCore.currentSpeciesId === this.playerSpecies) {
+        this.gameWon = true;
+        this.gameOver = false;
+        this.setResult('Ядро соперника захвачено', 'Вы выиграли дуэль разумов.', 'good');
+      }
+    }
+  }
+
   private processTurn(dirtyCells: CellKey[]) {
     this.lastSquaresMatched = [];
     this.currentCombo = 0;
     this.resolveSquares(dirtyCells);
-    this.validateAndCleanIntents();
+    this.checkTerminalState();
+    if (this.gameOver || this.gameWon) {
+      this.turn++;
+      this.updateStats();
+      if (!this.multiplayerMode) RecordManager.update(this.stats, this.dailyKey);
+      this.save();
+      this.notify();
+      return;
+    }
+    if (!this.multiplayerMode) this.validateAndCleanIntents();
 
+    const hostileIntentCount = this.multiplayerMode ? 0 : this.activeIntents.length;
     const resolution = this.suppressAi
       ? { changedCells: [] as CellKey[], anims: [] as GameAnimEvent[], coreCaptured: false }
-      : SpreadSimulator.resolveIntents(this.activeIntents, this.world, this.prng, this.playerSpecies, this.coreX, this.coreY, this.turn);
+      : SpreadSimulator.resolveIntents(
+        this.activeIntents,
+        this.world,
+        this.prng,
+        this.playerSpecies,
+        this.coreX,
+        this.coreY,
+        this.turn,
+        (key) => {
+          this.resolveSquares([key]);
+          this.checkTerminalState();
+          return this.gameOver || this.gameWon;
+        },
+      );
     this.animEvents.push(...resolution.anims);
-    this.activeIntents = [];
-    if (resolution.changedCells.length) this.resolveSquares(resolution.changedCells);
-
-    const core = this.world.getCell(this.coreX, this.coreY);
-    if (resolution.coreCaptured || core.currentSpeciesId !== this.playerSpecies) {
-      this.gameOver = true;
-      this.isCoreInDanger = false;
-      this.animEvents.push({ type: 'gameOver' });
-      this.addLog('Your Core was captured.', 'death');
-    }
+    if (!this.multiplayerMode) this.activeIntents = [];
+    this.checkTerminalState();
 
     this.turn++;
     this.stats.currentCombo = this.currentCombo;
     this.stats.maxCombo = Math.max(this.stats.maxCombo, this.currentCombo);
-    if (this.currentCombo > 1) this.addLog(`Combo ×${this.currentCombo}`, 'combo');
+    if (this.currentCombo > 0 && !this.gameOver && !this.gameWon) {
+      const largest = this.lastSquaresMatched.filter((square) => square.speciesId === this.playerSpecies).reduce((max, square) => Math.max(max, square.size), 0);
+      const pressure = hostileIntentCount ? ` · вражеское давление ${resolution.anims.length ? 'продвинулось' : 'сдержано'}` : '';
+      this.setResult(`Квадрат ${largest}×${largest}${this.currentCombo > 1 ? ` · цепочка ×${this.currentCombo}` : ''}`, `Внутренность укреплена${largest >= 4 ? ' · Перекраска восстановлена' : ''}${pressure}.`, 'good');
+    } else if (hostileIntentCount > 0 && !this.gameOver && !this.gameWon) {
+      const successes = resolution.anims.length;
+      const failures = hostileIntentCount - successes;
+      this.setResult(
+        successes ? 'Враждебное давление продвинулось' : 'Фронтир устоял',
+        `Успешных намерений: ${successes}${failures > 0 ? ` · сорвано: ${failures}` : ''}. Изучите следующие отростки до своего решения.`,
+        successes ? 'warning' : 'neutral',
+      );
+      this.addLog(successes ? `Разрешено враждебных намерений: ${successes}.` : 'Враждебные намерения не смогли закрепиться.', 'intent');
+    }
+    if (this.currentCombo > 1) this.addLog(`Цепочка ×${this.currentCombo}`, 'combo');
 
     for (const chunk of this.world.getLoadedChunks()) {
       for (const cell of chunk.cells.values()) {
@@ -422,10 +526,14 @@ export class GameEngine {
           cell.blockedUntilTurn = undefined;
           if (!cell.claimed) cell.revealed = false;
         }
+        if (cell.dormantUntilTurn && cell.dormantUntilTurn <= this.turn) {
+          cell.dormantUntilTurn = undefined;
+          this.addLog(`Спора семейства «${GAME_CONFIG.colors.species[cell.currentSpeciesId].name}» пробудилась.`, 'event');
+        }
       }
     }
 
-    if (!this.gameOver && this.turn % GAME_CONFIG.eventInterval === 0) {
+    if (!this.gameOver && !this.multiplayerMode && this.turn % GAME_CONFIG.eventInterval === 0) {
       const { event } = WorldEventManager.triggerEvent(this.turn, this.prng, this.world, this.strains, this.playerSpecies, this.getScheduledEventType(this.turn));
       this.lastEvent = event;
       this.stats.eventsSurvived++;
@@ -435,11 +543,11 @@ export class GameEngine {
 
     const turnsUntilEvent = this.getTurnsUntilEvent();
     const eventTurn = this.turn + turnsUntilEvent;
-    this.eventWarning = turnsUntilEvent <= 2 ? `${EVENT_COPY[this.getScheduledEventType(eventTurn)][0]} in ${turnsUntilEvent}` : null;
-    this.validateAndCleanIntents();
+    this.eventWarning = turnsUntilEvent <= 2 ? `${EVENT_COPY[this.getScheduledEventType(eventTurn)][0]} · через ходов: ${turnsUntilEvent}` : null;
+    if (!this.multiplayerMode) this.validateAndCleanIntents();
     if (!this.gameOver && !this.suppressAi) this.generateUpcomingIntents();
     this.updateStats();
-    RecordManager.update(this.stats, this.dailyKey);
+    if (!this.multiplayerMode) RecordManager.update(this.stats, this.dailyKey);
     this.save();
     this.notify();
   }
@@ -459,7 +567,7 @@ export class GameEngine {
   }
 
   public save() {
-    if (this.tutorialMode) return;
+    if (this.tutorialMode || this.multiplayerMode) return;
     const cells: SaveData['cells'] = [];
     for (const chunk of this.world.getLoadedChunks()) {
       for (const cell of chunk.cells.values()) {
@@ -476,12 +584,14 @@ export class GameEngine {
           isSnapHidden: cell.isSnapHidden,
           obscuredUntilTurn: cell.obscuredUntilTurn,
           blockedUntilTurn: cell.blockedUntilTurn,
+          dormantUntilTurn: cell.dormantUntilTurn,
         });
       }
     }
     SaveManager.save({
       version: SAVE_VERSION,
       seed: this.seed,
+      rngState: this.prng.getState(),
       turn: this.turn,
       playerSpecies: this.playerSpecies,
       repaintCharges: this.repaintCharges,
@@ -505,6 +615,7 @@ export class GameEngine {
     engine.coreX = data.coreX;
     engine.coreY = data.coreY;
     engine.gameOver = data.gameOver;
+    engine.prng.setState(data.rngState ?? data.seed);
     engine.dailyKey = data.dailyKey;
     engine.strains = data.strains ?? [];
     engine.stats = { ...emptyStats(), ...data.stats };
@@ -517,7 +628,73 @@ export class GameEngine {
     engine.activeIntents = data.activeIntents ?? [];
     engine.validateAndCleanIntents();
     engine.updateStats();
-    if (!engine.activeIntents.length && !engine.gameOver) engine.generateUpcomingIntents();
+    const turnsUntilEvent = engine.getTurnsUntilEvent();
+    const eventTurn = engine.turn + turnsUntilEvent;
+    engine.eventWarning = turnsUntilEvent <= 2 ? `${EVENT_COPY[engine.getScheduledEventType(eventTurn)][0]} · через ходов: ${turnsUntilEvent}` : null;
+    engine.lastResult = { id: `load:${engine.turn}`, title: 'Колония восстановлена', detail: 'Намерения и мир продолжены ровно с момента сохранения.', tone: 'neutral' };
     return engine;
+  }
+
+  public resolveDuelRound(round: number, opponentSpecies: SpeciesId) {
+    if (!this.multiplayerMode || this.gameOver || this.gameWon) return;
+    const players = [this.playerSpecies, opponentSpecies];
+    const pending = [...this.activeIntents];
+    this.activeIntents = [];
+    if (pending.length) {
+      const resolution = SpreadSimulator.resolveIntents(
+        pending,
+        this.world,
+        this.prng,
+        this.playerSpecies,
+        this.coreX,
+        this.coreY,
+        this.turn,
+        (key) => {
+          this.resolveSquares([key]);
+          const ownCoreAlive = this.world.getCell(this.coreX, this.coreY).currentSpeciesId === this.playerSpecies;
+          const rivalCoreAlive = this.enemyCoreX === null || this.enemyCoreY === null || this.world.getCell(this.enemyCoreX, this.enemyCoreY).currentSpeciesId === opponentSpecies;
+          return !ownCoreAlive || !rivalCoreAlive;
+        },
+        players,
+      );
+      this.animEvents.push(...resolution.anims);
+      const failed = pending.length - resolution.anims.length;
+      this.setResult(
+        resolution.anims.length ? 'Нейтральное давление продвинулось' : 'Обе колонии устояли',
+        `Сработало нейтральных намерений: ${resolution.anims.length}${failed ? ` · сорвано: ${failed}` : ''}.`,
+        resolution.anims.length ? 'warning' : 'neutral',
+      );
+    }
+    if (round % 5 === 0) {
+      const { event } = WorldEventManager.triggerEvent(this.turn, this.prng, this.world, this.strains, this.playerSpecies, this.getScheduledEventType(this.turn), [opponentSpecies]);
+      this.lastEvent = event;
+      this.stats.eventsSurvived++;
+      this.animEvents.push({ type: 'event', event });
+      this.addLog(`${event.title} · раунд дуэли ${round}`, 'event');
+      this.setResult(event.title, 'Субстрат отвечает после хода обеих колоний.', 'warning');
+    }
+    this.checkTerminalState();
+    if (!this.gameOver && !this.gameWon) {
+      const eventActive = this.lastEvent && this.lastEvent.expiresTurn >= this.turn ? this.lastEvent : null;
+      this.activeIntents = SpreadSimulator.generateIntents(
+        this.world,
+        this.prng,
+        this.strains,
+        Math.max(1, this.getCurrentEra().maxIntents),
+        this.playerSpecies,
+        this.turn,
+        this.coreX,
+        this.coreY,
+        {
+          bonusSpecies: eventActive?.type === 'BLOOM_TIDE' ? eventActive.targetSpeciesId : undefined,
+          drought: eventActive?.type === 'DROUGHT',
+          excludedSourceSpecies: players,
+          attackableSpecies: players,
+        },
+      );
+      this.isCoreInDanger = this.activeIntents.some((intent) => intent.targetCell === getCellKey(this.coreX, this.coreY));
+    }
+    this.updateStats();
+    this.notify();
   }
 }

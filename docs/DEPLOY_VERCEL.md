@@ -1,9 +1,9 @@
-# Deploy to Vercel
+# Развёртывание на Vercel
 
-1. Push the repository to GitHub.
-2. Import it in Vercel.
-3. Let Vercel detect Next.js and use `npm run build`.
-4. Add no environment variables for the base game.
-5. Deploy.
+1. Отправьте репозиторий на GitHub.
+2. Импортируйте его в Vercel.
+3. Оставьте автоматическое определение Next.js и команду `npm run build`.
+4. Не добавляйте переменные окружения для основной игры.
+5. Нажмите Deploy.
 
-There is no database, authentication service, required secret, or runtime API. Core play and local saves run entirely in the browser. P2P availability still depends on both players' browser/network WebRTC support.
+База данных, авторизация, секреты и серверный API не требуются. Игра и локальные сохранения полностью работают в браузере. Доступность P2P-дуэлей зависит от поддержки WebRTC браузерами и сетями обоих игроков.

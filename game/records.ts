@@ -29,11 +29,13 @@ export class RecordManager {
   }
   public static update(stats: GameStats, dailyKey?: string) {
     if (typeof window === 'undefined') return;
-    const run = fromStats(stats);
-    localStorage.setItem(OVERALL_KEY, JSON.stringify(merge(this.read(OVERALL_KEY), run)));
-    if (dailyKey) {
-      const key = DAILY_PREFIX + dailyKey;
-      localStorage.setItem(key, JSON.stringify(merge(this.read(key), run)));
-    }
+    try {
+      const run = fromStats(stats);
+      localStorage.setItem(OVERALL_KEY, JSON.stringify(merge(this.read(OVERALL_KEY), run)));
+      if (dailyKey) {
+        const key = DAILY_PREFIX + dailyKey;
+        localStorage.setItem(key, JSON.stringify(merge(this.read(key), run)));
+      }
+    } catch { /* Storage can be unavailable; gameplay must continue. */ }
   }
 }

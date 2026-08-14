@@ -1,38 +1,50 @@
 # MYCELIUM
 
-A living territory strategy about prediction, geometry, and pressure.
+Пошаговая территориальная стратегия о предвидении, геометрии и давлении. Исследуйте неопределённые клетки, читайте намерения враждебных колоний, замыкайте квадраты и защищайте живое Ядро.
 
-Reveal uncertain cells.
+## Возможности
 
-Attack neighboring colonies.
+- Одиночная игра с воспроизводимыми мирами, событиями, мутациями и сохранением.
+- Ежедневное испытание и ссылка-вызов с общим кодом мира.
+- Прямая P2P-дуэль 1 на 1 без аккаунта, сервера и базы данных.
+- Пять игровых семейств с разными особенностями и стилями развития.
+- Полностью русскоязычный интерфейс и индексируемый [Атлас Чёрного Субстрата](/app/wiki/page.tsx).
+- Адаптивный интерфейс для компьютеров и мобильных устройств.
 
-Close same-color squares to claim territory.
+## Локальный запуск
 
-Read enemy intentions.
-
-Protect your Core.
-
-Solo survival + lightweight P2P 1v1. No account or database required.
-
-## Run
+Требуется актуальная LTS-версия Node.js.
 
 ```bash
-npm install
+npm ci
 npm run dev
-npm test
-npm run build
-npm run build:itch
 ```
 
-The base game needs no environment variables, backend, database, authentication, or API key.
+Проверка перед выпуском:
 
-## Rules in one minute
+```bash
+npm run typecheck
+npm test
+npm run build
+```
 
-- Reveal a hidden cell touching your territory. Hover first to read its seeded species forecast.
-- Attack any adjacent revealed hostile cell. Local allied support raises the displayed chance.
-- Repaint guarantees one adjacent hostile conversion. Charges begin at `2/3` and never exceed `3/3`.
-- Close a same-family square perimeter of `3×3` or larger to claim and reinforce its interior. Fills can chain.
-- Enemy tendrils announce valid intents. Capturing their real source cancels them immediately.
-- A hostile capture of your Core ends the run.
+## Развёртывание
 
-See [game rules](docs/GAME_RULES.md), [architecture](docs/ARCHITECTURE.md), [Vercel deployment](docs/DEPLOY_VERCEL.md), and [itch.io deployment](docs/DEPLOY_ITCH.md).
+Проект разворачивается на Vercel как стандартное приложение Next.js. Переменные окружения, база данных, авторизация и ключи API не требуются. Достаточно импортировать репозиторий и нажать Deploy; команда сборки определяется автоматически.
+
+Для автономной сборки itch.io предусмотрена команда `npm run build:itch`.
+
+Подробности: [правила игры](docs/GAME_RULES.md), [архитектура](docs/ARCHITECTURE.md), [Vercel](docs/DEPLOY_VERCEL.md), [itch.io](docs/DEPLOY_ITCH.md).
+
+## Игровое правило за минуту
+
+1. Наведитесь на клетку фронтира, изучите прогноз и откройте её.
+2. Атакуйте соседние раскрытые клетки: союзная поддержка повышает шанс успеха.
+3. Замкните периметр одного семейства размером от 3×3, чтобы захватить и укрепить внутренность.
+4. Следите за показанными намерениями врага и захватывайте источник опасного отростка.
+5. Используйте ограниченные заряды Перекраски для гарантированного захвата.
+6. Не позволяйте противнику захватить Ядро.
+
+## Технологии
+
+Next.js 16, React 19, TypeScript, PixiJS и Trystero. Игра работает полностью на стороне клиента; статические страницы, метаданные, `robots.txt` и `sitemap.xml` формируются Next.js.

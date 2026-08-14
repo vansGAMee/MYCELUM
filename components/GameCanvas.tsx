@@ -2,12 +2,13 @@
 
 import React, { useEffect, useRef, useCallback } from 'react';
 import { GameEngine } from '../game/engine';
+import type { MpActionType } from '../game/multiplayer';
 import { PixiGameRenderer } from '../render/pixiGame';
 
 interface GameCanvasProps {
   engine: GameEngine;
   onRendererReady?: (renderer: PixiGameRenderer) => void;
-  onOnlineAction?: (x: number, y: number, type: 'reveal' | 'attack' | 'repaint') => boolean;
+  onOnlineAction?: (x: number, y: number, type: MpActionType) => boolean;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({ engine, onRendererReady, onOnlineAction }) => {

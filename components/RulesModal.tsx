@@ -2,17 +2,17 @@
 
 export function RulesModal({ onClose }: { onClose: () => void }) {
   const rules = [
-    ['Goal', 'Protect your Core and survive. A hostile capture ends the run.'],
-    ['Reveal', 'Open hidden cells touching your colony. Hover to see the real seeded likelihoods.'],
-    ['Attack', 'Click adjacent enemies. More nearby allies improve your odds. Every attempt spends the turn.'],
-    ['Squares', 'Close a same-color 3×3 or larger perimeter to claim and reinforce its interior.'],
-    ['Repaint', 'A guaranteed adjacent conversion. Charges are limited to 3; large squares restore one.'],
-    ['Enemies', 'Thin tendrils show important actions before they resolve. Remove the real source to cancel one.'],
-    ['Defeat', 'An enemy captures your Core. There are no shields or hidden Core health.'],
+    ['Цель', 'Защищайте своё Ядро и расширяйте колонию. Захват вражеского Ядра завершает дуэль победой.'],
+    ['Исследование', 'Открывайте скрытые клетки рядом со своей территорией. Перед ходом наведите курсор и изучите вероятности семейств.'],
+    ['Атака', 'Нажмите на соседнюю враждебную клетку. Союзники рядом повышают шанс, защитники цели — понижают. Любая попытка тратит ход.'],
+    ['Квадраты', 'Замкните одноцветный периметр 3×3 или больше: внутренние клетки будут захвачены и укреплены. Квадраты способны запускать цепочки.'],
+    ['Перекраска', 'Гарантированный захват соседней враждебной клетки. Зарядов не больше трёх; крупные квадраты восстанавливают один.'],
+    ['Намерения', 'Тонкие нити заранее показывают важные действия нейтральных колоний. Захватите настоящий источник, чтобы отменить намерение.'],
+    ['Поражение', 'Если враг захватит ваше Ядро, колония погибнет немедленно. Скрытого здоровья и щитов у Ядра нет.'],
   ];
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="rules-title">
     <section className="modal">
-      <header className="modal-head"><h2 id="rules-title">How to play</h2><button className="icon-button" onClick={onClose} aria-label="Close">Close</button></header>
+      <header className="modal-head"><h2 id="rules-title">Как играть</h2><button className="icon-button" onClick={onClose} aria-label="Закрыть">Закрыть</button></header>
       <div className="rules-grid">{rules.map(([title, copy]) => <div key={title} style={{ display: 'contents' }}><b>{title}</b><p>{copy}</p></div>)}</div>
     </section>
   </div>;

@@ -1,6 +1,7 @@
 import { Application, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import { GAME_CONFIG, SpeciesId } from '../game/config';
 import { GameEngine } from '../game/engine';
+import type { MpActionType } from '../game/multiplayer';
 import { Camera } from './camera';
 import { ParticlePool } from './effects';
 
@@ -47,7 +48,7 @@ export class PixiGameRenderer {
   private lastTileSignature = '';
   private lastHoverKey = '';
 
-  constructor(container: HTMLElement, engine: GameEngine, private onlineAction?: (x: number, y: number, type: 'reveal' | 'attack' | 'repaint') => boolean) {
+  constructor(container: HTMLElement, engine: GameEngine, private onlineAction?: (x: number, y: number, type: MpActionType) => boolean) {
     this.containerElement = container;
     this.engine = engine;
     this.app = new Application();
@@ -86,7 +87,7 @@ export class PixiGameRenderer {
 
     this.setupEvents();
     this.app.ticker.add((ticker) => this.update(ticker.deltaTime));
-    this.camera.centerOnTile(0, 0);
+    this.camera.centerOnTile(this.engine.coreX, this.engine.coreY);
 
     this.unsubscribeEngine = this.engine.subscribe(() => this.onEngineUpdate());
 
@@ -173,7 +174,8 @@ export class PixiGameRenderer {
         } else {
           const cell = this.engine.world.getExistingCell(tileX, tileY);
           if (cell?.isSnapHidden) {
-            this.engine.inspectObscuredCell(tileX, tileY);
+            if (this.onlineAction) this.onlineAction(tileX, tileY, 'inspect');
+            else this.engine.inspectObscuredCell(tileX, tileY);
           } else if (cell?.claimed && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && (!cell.isCore || (tileX === this.engine.enemyCoreX && tileY === this.engine.enemyCoreY))) {
             if (this.onlineAction) this.onlineAction(tileX, tileY, 'attack');
             else this.engine.attackCell(tileX, tileY);
@@ -214,7 +216,13 @@ export class PixiGameRenderer {
     const adjacent = this.engine.isAdjacentToPlayerTerritory(x, y);
     let detail: Record<string, unknown> | null = null;
     if (cell.isSnapHidden && cell.claimed) {
-      detail = { x: clientX, y: clientY, title: 'MEMORY OBSCURED', lines: ['Click to inspect · free action'] };
+      const denseFog = !!cell.obscuredUntilTurn && cell.obscuredUntilTurn >= this.engine.turn;
+      detail = {
+        x: clientX,
+        y: clientY,
+        title: denseFog ? 'ГУСТОЙ ТУМАН' : 'ПАМЯТЬ СКРЫТА',
+        lines: [denseFog ? `Рассеется после хода ${cell.obscuredUntilTurn}` : 'Нажмите для осмотра · бесплатно'],
+      };
     } else if (!cell.claimed && !cell.revealed && adjacent) {
       const prediction = this.engine.getSpeciesPrediction(x, y);
       const ranked = Object.entries(prediction.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 3);
@@ -222,23 +230,25 @@ export class PixiGameRenderer {
       detail = {
         x: clientX,
         y: clientY,
-        title: `LIKELY ${GAME_CONFIG.colors.species[prediction.likelySpecies].name.toUpperCase()}`,
-        lines: ranked.map(([id, chance]) => `${GAME_CONFIG.colors.species[id as SpeciesId].name.split(' ')[0]} ${chance}%`).concat(square ? [`IF ${GAME_CONFIG.colors.species[this.engine.playerSpecies].name.split(' ')[0]}: COMPLETES ${square}×${square}`] : []),
+        title: `ВЕРОЯТНЕЕ ВСЕГО: ${GAME_CONFIG.colors.species[prediction.likelySpecies].name.toUpperCase()}`,
+        lines: ranked.map(([id, chance]) => `${GAME_CONFIG.colors.species[id as SpeciesId].name.split(' ')[0]} ${chance}%`).concat(square ? [`ЕСЛИ ВАША: ЗАМКНЁТ ${square}×${square}`] : []),
       };
     } else if (cell.claimed && cell.revealed && cell.currentSpeciesId !== this.engine.playerSpecies && (!cell.isCore || (x === this.engine.enemyCoreX && y === this.engine.enemyCoreY)) && adjacent) {
       const preview = this.engine.getAttackPreview(x, y);
       const square = this.engine.previewCompletedSquare(x, y);
+      const mutation = cell.strainId ? this.engine.strains.find((strain) => strain.id === cell.strainId) : undefined;
+      const mutationLine = mutation ? `${mutation.trait === 'swift' ? 'СТРЕМИТЕЛЬНАЯ · действует раньше' : mutation.trait === 'armored' ? 'БРОНИРОВАННАЯ · требует сильной поддержки' : 'ПАРАЗИТ · вторгается по диагонали'}` : null;
       detail = {
         x: clientX,
         y: clientY,
-        title: this.engine.isRepaintMode ? `REPAINT ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : `ATTACK ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}`,
+        title: this.engine.isRepaintMode ? `ПЕРЕКРАСИТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}` : `АТАКОВАТЬ: ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.toUpperCase()}`,
         lines: this.engine.isRepaintMode
-          ? ['Guaranteed capture', `${this.engine.repaintCharges}/3 charges`, ...(square ? [`WOULD COMPLETE ${square}×${square}`] : [])]
-          : [`SUCCESS ${preview.chance}%`, `${preview.attackerSupport} ${GAME_CONFIG.colors.species[this.engine.playerSpecies].name.split(' ')[0]} support`, `${preview.defenderSupport} ${GAME_CONFIG.colors.species[cell.currentSpeciesId].name.split(' ')[0]} support`, ...(square ? [`WOULD COMPLETE ${square}×${square}`] : [])],
+          ? ['Гарантированный захват', `Заряды: ${this.engine.repaintCharges}/3`, ...(mutationLine ? [mutationLine] : []), ...(square ? [`ЗАМКНЁТ ${square}×${square}`] : [])]
+          : [`УСПЕХ ${preview.chance}%`, `Поддержка атаки: ${preview.attackerSupport}`, `Поддержка защиты: ${preview.defenderSupport}`, ...(mutationLine ? [mutationLine] : []), ...(square ? [`ЗАМКНЁТ ${square}×${square}`] : [])],
       };
     } else {
       const intent = this.engine.activeIntents.find((item) => item.targetCell === `${x}:${y}`);
-      if (intent) detail = { x: clientX, y: clientY, title: `${GAME_CONFIG.colors.species[intent.sourceSpeciesId].name.toUpperCase()} ${intent.actionType.toUpperCase()}`, lines: [`${intent.chance}%`, 'Resolves after your move'] };
+      if (intent) detail = { x: clientX, y: clientY, title: `${GAME_CONFIG.colors.species[intent.sourceSpeciesId].name.toUpperCase()} · ${intent.actionType === 'attack' ? 'АТАКА' : 'РОСТ'}`, lines: [`Шанс ${intent.chance}%`, 'Разрешится после вашего хода'] };
     }
     window.dispatchEvent(new CustomEvent('mycelium:hover', { detail }));
   }
@@ -256,6 +266,14 @@ export class PixiGameRenderer {
         const cy = ((ev.match.minY + ev.match.maxY) / 2) * step;
         const color = GAME_CONFIG.colors.species[ev.match.speciesId].hex;
         this.particles.burst(cx, cy, color, Math.min(ev.match.size * 6, 40));
+      }
+      if (ev.type === 'attackSuccess' || ev.type === 'attackFailure') {
+        const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
+        this.particles.burst(ev.x * step, ev.y * step, ev.type === 'attackSuccess' ? GAME_CONFIG.colors.species[ev.species].hex : 0x7f3434, ev.type === 'attackSuccess' ? 18 : 9);
+      }
+      if (ev.type === 'spread') {
+        const step = GAME_CONFIG.tileSize + GAME_CONFIG.tileGap;
+        this.particles.burst(ev.toX * step, ev.toY * step, GAME_CONFIG.colors.species[ev.species].hex, 12);
       }
     }
   }
@@ -378,6 +396,7 @@ export class PixiGameRenderer {
           }
 
           spr.alpha = 1;
+          if (cell.dormantUntilTurn && cell.dormantUntilTurn >= this.engine.turn) spr.alpha = 0.48 + Math.sin(this.time * 2) * 0.08;
 
           // Reveal animation
           const revealAnim = this.revealAnims.get(key);

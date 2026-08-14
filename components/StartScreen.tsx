@@ -23,25 +23,25 @@ export function StartScreen(props: StartScreenProps) {
       <div className="menu-shell">
         <section>
           <div className="colony-mark" aria-hidden="true">{Array.from({ length: 9 }, (_, i) => <span key={i} />)}</div>
-          <div className="brand-kicker">The Black Substrate</div>
+          <div className="brand-kicker">Чёрный Субстрат</div>
           <h1 className="brand-title">Mycelium</h1>
-          <p className="brand-copy"><strong>Read the colony. Close the square. Protect the Core.</strong><br />A living territory strategy about prediction, geometry, and pressure.</p>
+          <p className="brand-copy"><strong>Прочти колонию. Замкни квадрат. Защити Ядро.</strong><br />Живая территориальная стратегия о предвидении, геометрии и давлении.</p>
         </section>
-        <section className="menu-actions" aria-label="Main menu">
-          <div className="species-row" aria-label="Choose species">
+        <section className="menu-actions" aria-label="Главное меню">
+          <div className="species-row" aria-label="Выбор семейства">
             {SPECIES.map((id) => {
               const config = GAME_CONFIG.colors.species[id];
               return <button key={id} className="species-dot" style={{ '--species': config.cssHex } as React.CSSProperties} aria-pressed={species === id} onClick={() => setSpecies(id)} title={`${config.name} — ${config.passiveName}`}><i />{config.name.split(' ')[0]}</button>;
             })}
           </div>
           <div className="species-note"><strong style={{ color: selected.cssHex }}>{selected.name} · {selected.title}</strong><br />{selected.passiveDesc}</div>
-          <button className="menu-primary" disabled={!props.hasSave} onClick={props.onContinueGame}>Continue</button>
-          <button className="menu-primary" onClick={() => props.onStartNewGame(species)}>New world</button>
-          <button className="menu-link" onClick={() => props.onStartDaily(species)}>Daily challenge</button>
-          <button className="menu-link" onClick={props.onOpenMultiplayer}>Online 1v1</button>
-          <button className="menu-link" onClick={props.onStartTutorial}>Learn by playing</button>
-          <button className="menu-link" onClick={props.onOpenRules}>How to play</button>
-          <a className="menu-link" href="/wiki/">Codex</a>
+          <button className="menu-primary" disabled={!props.hasSave} onClick={props.onContinueGame}>Продолжить</button>
+          <button className="menu-primary" onClick={() => props.onStartNewGame(species)}>Новый мир</button>
+          <button className="menu-link" onClick={() => props.onStartDaily(species)}>Испытание дня</button>
+          <button className="menu-link" onClick={props.onOpenMultiplayer}>Онлайн 1 на 1</button>
+          <button className="menu-link" onClick={props.onStartTutorial}>Обучение в игре</button>
+          <button className="menu-link" onClick={props.onOpenRules}>Как играть</button>
+          <a className="menu-link" href="/wiki/">Атлас мира</a>
         </section>
       </div>
     </main>
