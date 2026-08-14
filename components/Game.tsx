@@ -203,7 +203,10 @@ export function Game() {
     setMpStatus(null);
     setMpLobby({ phase: 'waiting', role: host ? 'host' : 'guest', roomCode: code });
     manager.subscribe((event, data) => {
-      if (event === 'waiting') setMpLobby({ phase: 'waiting', role: host ? 'host' : 'guest', roomCode: code });
+      if (event === 'waiting') {
+        const message = data && typeof data === 'object' && 'message' in data && typeof data.message === 'string' ? data.message : undefined;
+        setMpLobby({ phase: 'waiting', role: host ? 'host' : 'guest', roomCode: code, message });
+      }
       if ((event === 'connected' || event === 'sync') && manager.engine) {
         setEngine(manager.engine);
         setIsPlaying(true);

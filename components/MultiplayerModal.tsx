@@ -36,7 +36,7 @@ export function MultiplayerModal({ onHost, onJoin, onClose, lobby }: Multiplayer
         <span className="lobby-signal" aria-hidden="true" />
         <small className="lobby-eyebrow">{hosting ? 'КОМНАТА СОЗДАНА' : 'КОМНАТА НАЙДЕНА'}</small>
         <h2 id="lobby-title">{hosting ? 'Ждём соперника' : 'Подключаемся к Субстрату'}</h2>
-        <p>{hosting ? 'Отправьте этот код одному сопернику. Дуэль начнётся, когда обе колонии подтвердят одинаковое состояние мира.' : 'Не закрывайте окно, пока устанавливается прямое соединение между игроками.'}</p>
+        <p>{lobby.message ?? (hosting ? 'Отправьте этот код одному сопернику. Дуэль начнётся, когда обе колонии подтвердят одинаковое состояние мира.' : 'Не закрывайте окно, пока устанавливается соединение между игроками.')}</p>
         <button className="room-code" onClick={() => { void copyRoom(lobby.roomCode!); setCopied(true); }} aria-label="Скопировать код комнаты">
           <span>{lobby.roomCode}</span><small>{copied ? 'СКОПИРОВАНО' : 'СКОПИРОВАТЬ КОД'}</small>
         </button>

@@ -1,7 +1,8 @@
 import { joinRoom } from 'trystero/nostr';
-import type { DataPayload, MessageAction, Room } from '@trystero-p2p/core';
+import type { BaseRoomConfig, DataPayload, MessageAction, Room } from '@trystero-p2p/core';
 import { GAME_CONFIG, type SpeciesId } from './config';
 import { GameEngine } from './engine';
+import { hasPublicTurnConfiguration, resolveTurnConfiguration, type ResolvedTurnConfiguration } from './turn';
 import type { ActionResult, CellKey, EnemyIntent, GameAnimEvent, SquareMatch, Strain, WorldEvent } from './types';
 
 export type MpActionType = 'reveal' | 'attack' | 'repaint' | 'inspect';
@@ -84,6 +85,11 @@ interface ReadyMessage extends WireMessage { ready: true }
 
 export type MpCallback = (event: 'waiting' | 'connected' | 'sync' | 'rejected' | 'disconnected' | 'error', data?: unknown) => void;
 
+export interface MultiplayerDependencies {
+  joinTransport?: typeof joinRoom;
+  resolveTurn?: () => Promise<ResolvedTurnConfiguration>;
+}
+
 export class MultiplayerManager {
   public isHost = false;
   public roomCode = '';
@@ -113,6 +119,14 @@ export class MultiplayerManager {
   private syncedKeys = new Set<CellKey>();
   private hostResources: PlayerResources = { repaintCharges: 2, maxTerritory: 9, enemiesCaptured: 0 };
   private guestResources: PlayerResources = { repaintCharges: 2, maxTerritory: 9, enemiesCaptured: 0 };
+  private transportAttempt = 0;
+  private readonly joinTransport: typeof joinRoom;
+  private readonly resolveTurn: () => Promise<ResolvedTurnConfiguration>;
+
+  public constructor(dependencies: MultiplayerDependencies = {}) {
+    this.joinTransport = dependencies.joinTransport ?? joinRoom;
+    this.resolveTurn = dependencies.resolveTurn ?? (() => resolveTurnConfiguration());
+  }
 
   public subscribe(callback: MpCallback): () => void {
     this.listeners.add(callback);
@@ -127,25 +141,26 @@ export class MultiplayerManager {
   public isMyTurn(): boolean { return this.isConnected && this.activePlayer === this.getRole() && !this.pendingAction && !this.winner; }
 
   public hostRoom(code: string, species: SpeciesId) {
-    this.resetSession();
+    const attempt = this.resetSession();
     this.isHost = true;
     this.roomCode = code.trim().toUpperCase();
     this.hostSpecies = species;
-    this.initializeTransport();
-    this.notify('waiting', { roomCode: this.roomCode });
+    this.notify('waiting', { roomCode: this.roomCode, message: this.initialConnectionMessage() });
+    void this.initializeTransport(attempt);
   }
 
   public joinRoom(code: string, species: SpeciesId) {
-    this.resetSession();
+    const attempt = this.resetSession();
     this.isHost = false;
     this.roomCode = code.trim().toUpperCase();
     this.guestSpecies = species;
-    this.initializeTransport();
-    this.notify('waiting', { roomCode: this.roomCode });
-    this.sendHello();
+    this.notify('waiting', { roomCode: this.roomCode, message: this.initialConnectionMessage() });
+    void this.initializeTransport(attempt);
   }
 
-  private resetSession() {
+  private resetSession(): number {
+    this.closeTransport();
+    const attempt = ++this.transportAttempt;
     this.winner = undefined;
     this.round = 1;
     this.revision = 0;
@@ -157,18 +172,55 @@ export class MultiplayerManager {
     this.syncedKeys.clear();
     this.isConnected = false;
     this.opponentPeerId = null;
+    this.engine = null;
     this.hostResources = { repaintCharges: 2, maxTerritory: 9, enemiesCaptured: 0 };
     this.guestResources = { repaintCharges: 2, maxTerritory: 9, enemiesCaptured: 0 };
+    return attempt;
   }
 
-  private initializeTransport() {
-    if (!this.roomCode) { this.notify('error', 'Room code is required.'); return; }
+  private initialConnectionMessage(): string {
+    return hasPublicTurnConfiguration()
+      ? 'Проверяем резервное соединение через TURN…'
+      : 'Настраиваем прямое P2P-соединение…';
+  }
+
+  private waitingMessage(turn: ResolvedTurnConfiguration): string {
+    if (turn.mode !== 'none') return this.isHost
+      ? 'Резервный маршрут TURN готов. Ожидаем соперника…'
+      : 'TURN готов. Ищем безопасный маршрут к хозяину…';
+    return this.isHost
+      ? 'Комната создана. Ожидаем соперника по прямому P2P-соединению…'
+      : 'Пробуем прямое P2P-соединение с хозяином…';
+  }
+
+  private async initializeTransport(attempt: number) {
+    if (!this.roomCode) { this.notify('error', 'Укажите код комнаты.'); return; }
+    let turn: ResolvedTurnConfiguration;
+    try {
+      turn = await this.resolveTurn();
+    } catch (error) {
+      console.warn('[MYCELIUM multiplayer] TURN initialization failed; continuing with direct P2P', error);
+      turn = { mode: 'none' };
+    }
+    if (attempt !== this.transportAttempt) return;
+    if (turn.warning) console.warn('[MYCELIUM multiplayer]', turn.warning);
+
     if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
       this.channel = new BroadcastChannel(`mycelium:${this.roomCode}`);
       this.channel.onmessage = ({ data }) => this.handleLocal(data as { kind: string; data?: WireMessage });
     }
     try {
-      this.room = joinRoom({ appId: 'mycelium-v3' }, this.roomCode, { onJoinError: ({ error }) => this.notify('error', error) });
+      const roomConfig: BaseRoomConfig = { appId: 'mycelium-v3' };
+      if (turn.mode === 'rtc') roomConfig.rtcConfig = { iceServers: turn.iceServers };
+      if (turn.mode === 'turn') roomConfig.turnConfig = turn.turnServers;
+      this.room = this.joinTransport(roomConfig, this.roomCode, {
+        onJoinError: ({ error, peerId }) => {
+          if (attempt !== this.transportAttempt) return;
+          console.warn('[MYCELIUM multiplayer] WebRTC join failed', { peerId, error, turnMode: turn.mode });
+          const turnHint = turn.mode === 'none' ? ' Резервный маршрут TURN не настроен или недоступен.' : '';
+          this.notify('error', `Не удалось установить сетевое соединение.${turnHint} Попробуйте ещё раз или отключите VPN для страницы игры.`);
+        },
+      });
       this.action = this.room.makeAction('action');
       this.sync = this.room.makeAction('sync');
       this.init = this.room.makeAction('init');
@@ -215,9 +267,34 @@ export class MultiplayerManager {
         if (this.isHost || peerId !== this.opponentPeerId) return;
         this.receiveSync(state);
       };
+      this.notify('waiting', { roomCode: this.roomCode, message: this.waitingMessage(turn) });
+      if (!this.isHost) this.sendHello();
     } catch (error) {
-      this.notify('error', error instanceof Error ? error.message : 'Не удалось создать прямое соединение.');
+      console.error('[MYCELIUM multiplayer] Transport initialization failed', error);
+      this.closeTransport();
+      this.notify('error', 'Не удалось запустить сетевое соединение. Закройте комнату и попробуйте ещё раз.');
     }
+  }
+
+  private closeTransport() {
+    this.channel?.close();
+    this.channel = null;
+    if (this.room) {
+      this.room.onPeerJoin = null;
+      this.room.onPeerLeave = null;
+      void this.room.leave().catch((error) => console.warn('[MYCELIUM multiplayer] Room cleanup failed', error));
+    }
+    if (this.action) this.action.onMessage = null;
+    if (this.sync) this.sync.onMessage = null;
+    if (this.init) this.init.onMessage = null;
+    if (this.hello) this.hello.onMessage = null;
+    if (this.ready) this.ready.onMessage = null;
+    this.room = null;
+    this.action = undefined;
+    this.sync = undefined;
+    this.init = undefined;
+    this.hello = undefined;
+    this.ready = undefined;
   }
 
   private fallbackGuestSpecies(): SpeciesId {
@@ -464,10 +541,8 @@ export class MultiplayerManager {
   }
 
   public leave() {
-    this.channel?.close();
-    this.channel = null;
-    if (this.room) void this.room.leave();
-    this.room = null;
+    this.transportAttempt++;
+    this.closeTransport();
     this.engine = null;
     this.isConnected = false;
     this.pendingAction = false;

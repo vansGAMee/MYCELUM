@@ -16,4 +16,4 @@ The rules engine is authoritative. React and PixiJS project its state; neither o
 
 Gameplay randomness uses the engine PRNG. Cosmetic particles may vary. Saves contain logical cells and stable run data, never animation objects.
 
-Online uses Trystero over WebRTC/Nostr plus BroadcastChannel for same-browser testing. It requires no application secret. The host owns resolution; the guest sends intended actions. Advanced reconnect and matchmaking are intentionally out of scope.
+Online uses Trystero over WebRTC/Nostr plus BroadcastChannel for same-browser testing. The host owns resolution; the guest sends intended actions. WebRTC first tries direct ICE routes; an optional browser-safe TURN configuration supplies relay candidates for restrictive NAT, firewall, hotspot, or VPN networks. TURN credentials are fetched before joining the Trystero room, and a generation token prevents an older async request from opening a duplicate room. If credentials are absent or unavailable, transport continues with Trystero's direct P2P/STUN defaults. Advanced reconnect and matchmaking are intentionally out of scope.
