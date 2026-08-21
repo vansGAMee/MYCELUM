@@ -65,10 +65,12 @@ export class PixiGameRenderer {
     if (this.destroyed) return;
     const width = this.containerElement.clientWidth || window.innerWidth;
     const height = this.containerElement.clientHeight || window.innerHeight;
+    const useMobileCanvas = window.matchMedia('(pointer: coarse)').matches;
 
     await this.app.init({
       width, height,
       backgroundColor: GAME_CONFIG.colors.bg,
+      preference: useMobileCanvas ? 'canvas' : 'webgl',
       resolution: Math.min(window.devicePixelRatio || 1, 2),
       autoDensity: true,
       antialias: false,
