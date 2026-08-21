@@ -3,6 +3,7 @@ import { ImageResponse } from 'next/og';
 export const alt = 'MYCELIUM — прочти колонию, замкни квадрат, защити Ядро';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
+export const dynamic = 'force-static';
 
 const cells = [
   '#66d9c8', '#112a26', '#d7bc77', '#10201d', '#66d9c8',
