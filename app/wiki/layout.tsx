@@ -10,6 +10,11 @@ export const metadata: Metadata = {
     url: '/wiki',
     type: 'article',
   },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Атлас Чёрного Субстрата — MYCELIUM',
+    description: 'Лор, биология и действующие правила живого мира MYCELIUM.',
+  },
 };
 
 export default function WikiLayout({ children }: Readonly<{ children: React.ReactNode }>) {
